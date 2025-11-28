@@ -1,2 +1,2 @@
 # opentower
-Tower building simaltor
+Tower building simulator
