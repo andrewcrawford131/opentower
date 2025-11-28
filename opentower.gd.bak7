@@ -148,6 +148,10 @@ func _ready() -> void:
 	_minimap_world.add_child(mini_build)
 
 	_mini_frustum = MiniFrustum.new(self)
+	var mg: Grid = Grid.new(self)
+	mg.z_index = 0
+	_minimap_world.add_child(mg)
+	_minimap_world.queue_redraw()
 	_mini_frustum.z_index = 10
 	_minimap_world.add_child(_mini_frustum)
 	_minimap_world.queue_redraw()
@@ -250,6 +254,8 @@ func _ready() -> void:
 
 	_init_building()
 
+	if not get_tree().root.is_connected("tree_exiting", Callable(self, "_on_tree_exiting")):
+		get_tree().root.connect("tree_exiting", Callable(self, "_on_tree_exiting"))
 func _on_screen_resized() -> void:
 	# …your existing resize logic…
 	if is_instance_valid(_hud_layer):
@@ -288,8 +294,15 @@ func _minimap_relayout() -> void:
 	if world_w <= 0.0 or world_h <= 0.0:
 		return
 
-	_minimap_fit_world_bottom_aligned()
+	var mm_w: float = _minimap_texture_rect.size.x
+	var mm_h: float = _minimap_texture_rect.size.y
 
+	# Fit WIDTH exactly; keep uniform zoom to preserve aspect
+	# Fit entire world exactly into minimap
+	var zx: float = (_minimap_texture_rect.size.x) / (wx1 - wx0)
+	var zy: float = (_minimap_texture_rect.size.y) / (wy1 - wy0)
+	_minimap_camera.zoom = Vector2(zx, zy)
+	_minimap_camera.position = Vector2((wx0 + wx1) * 0.5, (wy0 + wy1) * 0.5)
 func _minimap_fit_full_world_bottom_aligned() -> void:
 	if _minimap_camera == null or _minimap_texture_rect == null:
 		return
@@ -312,10 +325,10 @@ func _minimap_fit_full_world_bottom_aligned() -> void:
 
 	# Uniform zoom from WIDTH; then compute visible height in world units
 	# (Godot Camera2D.zoom is a scale: larger values show "less" world)
-	var zoom_scale: float = mm_w / world_w
-	_minimap_camera.zoom = Vector2(zoom_scale, zoom_scale)
+	var scale: float = mm_w / world_w
+	_minimap_camera.zoom = Vector2(scale, scale)
 
-	var vis_h: float = mm_h / zoom_scale  # world units visible vertically
+	var vis_h: float = mm_h / scale  # world units visible vertically
 
 	# Center X; bottom-align Y so ground (wy0) sits at the bottom of the minimap
 	var cx: float = (wx0 + wx1) * 0.5
@@ -328,10 +341,7 @@ func _minimap_fit_full_world_bottom_aligned() -> void:
 	_minimap_camera.limit_top    = int(wy1)
 	_minimap_camera.limit_bottom = int(wy0)
 
-	if _minimap_camera.is_inside_tree():
-		_minimap_camera.make_current()
-	else:
-		_minimap_camera.call_deferred("make_current")
+	_minimap_camera.make_current()
 	_update_minimap_viewbox()
 
 func _minimap_fit_world_exact() -> void:
@@ -364,10 +374,7 @@ func _minimap_fit_world_exact() -> void:
 	_minimap_camera.limit_top    = int(wy1)
 	_minimap_camera.limit_bottom = int(wy0)
 
-	if _minimap_camera.is_inside_tree():
-		_minimap_camera.make_current()
-	else:
-		_minimap_camera.call_deferred("make_current")
+	_minimap_camera.make_current()  # once
 	_update_minimap_viewbox()
 	
 
@@ -387,10 +394,10 @@ func _minimap_fit_world_bottom_aligned() -> void:
 	if mm_w <= 0.0 or mm_h <= 0.0:
 		return
 	# Uniform width-fit; Camera2D.zoom is a scale (larger -> less world visible)
-	var zoom_scale: float = world_w / mm_w
-	_minimap_camera.zoom = Vector2(zoom_scale, zoom_scale)
+	var scale: float = world_w / mm_w
+	_minimap_camera.zoom = Vector2(scale, scale)
 	# Visible height in world units at this scale
-	var view_h_world: float = mm_h * zoom_scale
+	var view_h_world: float = mm_h * scale
 	# Center X; bottom-align Y (puts wy0 at bottom of minimap)
 	var cx: float = (wx0 + wx1) * 0.5
 	var cy: float = wy0 + view_h_world * 0.5
@@ -400,10 +407,7 @@ func _minimap_fit_world_bottom_aligned() -> void:
 	_minimap_camera.limit_right = int(wx1)
 	_minimap_camera.limit_top = int(wy1)
 	_minimap_camera.limit_bottom = int(wy0)
-	if _minimap_camera.is_inside_tree():
-		_minimap_camera.make_current()
-	else:
-		_minimap_camera.call_deferred("make_current")
+	_minimap_camera.make_current()
 	_update_minimap_viewbox()
 class MiniBackdrop:
 	extends Node2D
@@ -675,7 +679,7 @@ func _minimap_zoom_main(factor: float) -> void:
 	var world_h: float = wy1 - wy0
 
 	var focus_x: float = wx0 + (mm_pos.x / mm_size.x) * world_w
-	var focus_y: float = wy0 + (mm_pos.y / mm_size.y) * world_h
+	var focus_y: float = wy1 - (mm_pos.y / mm_size.y) * world_h
 
 	var new_zoom: Vector2 = _camera.zoom * factor
 	new_zoom.x = clamp(new_zoom.x, 0.25, 8.0)
@@ -2016,3 +2020,6 @@ func load_game(slot: int = _save_slot) -> bool:
 	var ok: bool = _deserialize_state(data)
 	_show_toast("Loaded slot " + str(slot + 1) if ok else "Load failed")
 	return ok
+
+func _on_tree_exiting() -> void:
+	_show_toast("Autosaved before quit")
