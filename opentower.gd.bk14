@@ -48,6 +48,7 @@ var _hover_valid: bool = false
 @export var MINIMAP_VIEWBOX_BORDER: int = 2
 @export var MINIMAP_VIEWBOX_COLOR: Color = Color(1, 1, 1, 1)
 @export var MINIMAP_HOME_TEXT: String = "Home"
+@export var MINIMAP_Y_BIAS: float = 0.58  # move brown down; tweak 0.55..0.62 as needed
 
 var _minimap_overlay: Control
 var _minimap_viewbox: Panel
@@ -113,7 +114,7 @@ func _ready() -> void:
 	_grid = Grid.new(self)
 	_grid.z_index = 10
 	_world.add_child(_grid)
-
+	
 	# ----- Minimap setup -----
 	_minimap_viewport = SubViewport.new()
 	_minimap_viewport.disable_3d = true
@@ -121,7 +122,6 @@ func _ready() -> void:
 	_minimap_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
 	_minimap_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_minimap_viewport.size = Vector2i(MINIMAP_SIZE, MINIMAP_SIZE)
-	add_child(_minimap_viewport)
 
 	_minimap_world = Node2D.new()
 	_minimap_world.name = "MinimapWorld"
@@ -129,11 +129,19 @@ func _ready() -> void:
 	_minimap_viewport.add_child(_minimap_world)
 
 	if _minimap_viewport.get_parent() == null:
-		add_child(_minimap_viewport)
+		var mini_bg2: MiniBackground = MiniBackground.new(self)
+		mini_bg2.z_index = -10
+		_minimap_world.add_child(mini_bg2)
 
-	var mini_bg2: MiniBackground = MiniBackground.new(self)
-	mini_bg2.z_index = -10
-	_minimap_world.add_child(mini_bg2)
+	var mini_grid: MiniGrid = MiniGrid.new(self)
+	mini_grid.z_index = 0
+	_minimap_world.add_child(mini_grid)
+
+	var mini_back: MiniBackdrop = MiniBackdrop.new(self)
+	mini_back.z_index = -20
+	_minimap_world.add_child(mini_back)
+
+	_minimap_fit_world_exact()
 
 	var mini_build: BuildLayer = BuildLayer.new(self)
 	mini_build.z_index = 5
@@ -142,12 +150,7 @@ func _ready() -> void:
 	_mini_frustum = MiniFrustum.new(self)
 	_mini_frustum.z_index = 10
 	_minimap_world.add_child(_mini_frustum)
-
-	_minimap_camera = Camera2D.new()
-	_minimap_camera.enabled = true
-	_minimap_camera.position = Vector2.ZERO
-	_minimap_viewport.add_child(_minimap_camera)
-	_minimap_camera.make_current()
+	_minimap_world.queue_redraw()
 
 	_minimap_camera = Camera2D.new()
 	_minimap_camera.enabled = true
@@ -162,6 +165,9 @@ func _ready() -> void:
 	_minimap_texture_rect.texture = _minimap_viewport.get_texture()
 	_minimap_texture_rect.custom_minimum_size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
 	_minimap_texture_rect.size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
+
+	_minimap_fit_world_bottom_aligned()
+
 
 	# Place top-right with margin (with border panel)
 	var vp_size: Vector2 = get_viewport().get_visible_rect().size
@@ -236,7 +242,6 @@ func _ready() -> void:
 	if not _minimap_texture_rect.is_connected("gui_input", Callable(self, "_on_minimap_gui_input")):
 		_minimap_texture_rect.connect("gui_input", Callable(self, "_on_minimap_gui_input"))
 
-	add_child(_minimap_viewport)
 	_minimap_layer.visible = true
 	_update_minimap_viewbox()
 
@@ -270,11 +275,9 @@ func _process(delta: float) -> void:
 	if _minimap_world != null:
 		_minimap_world.propagate_call("queue_redraw")
 
-
 func _minimap_relayout() -> void:
 	if _minimap_viewport == null or _minimap_texture_rect == null or _minimap_border == null:
 		return
-
 	var wx0: float = _world_left_px()
 	var wx1: float = _world_right_px()
 	var wy0: float = _world_bottom_px()
@@ -284,51 +287,68 @@ func _minimap_relayout() -> void:
 	if world_w <= 0.0 or world_h <= 0.0:
 		return
 
-	var mm_w: float = float(MINIMAP_SIZE)
-	var mm_h: float = float(MINIMAP_SIZE)
-
-	_minimap_viewport.size = Vector2i(int(round(mm_w)), int(round(mm_h)))
-	_minimap_texture_rect.custom_minimum_size = Vector2(mm_w, mm_h)
-	_minimap_texture_rect.size = Vector2(mm_w, mm_h)
-
-	if is_instance_valid(_minimap_overlay):
-		_minimap_overlay.custom_minimum_size = Vector2(mm_w, mm_h)
-		_minimap_overlay.size = Vector2(mm_w, mm_h)
-		_minimap_overlay.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-
-	var panel_w: float = mm_w + float(MINIMAP_BORDER) * 2.0
-	var panel_h: float = mm_h + float(MINIMAP_BORDER) * 2.0
-	_minimap_border.custom_minimum_size = Vector2(panel_w, panel_h)
-
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	_minimap_border.position = Vector2(
-		vp_size.x - panel_w - float(MINIMAP_MARGIN),
-		float(MINIMAP_MARGIN)
-	)
-	_minimap_texture_rect.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-
-	if is_instance_valid(_minimap_home_btn):
-		_minimap_home_btn.position = Vector2(float(MINIMAP_BORDER) + 6.0, float(MINIMAP_BORDER) + mm_h - 28.0)
+	var mm_w: float = _minimap_texture_rect.size.x
+	var mm_h: float = _minimap_texture_rect.size.y
+	if mm_w <= 0.0 or mm_h <= 0.0:
+		return
 
 	var zx: float = mm_w / world_w
 	var zy: float = mm_h / world_h
-	_minimap_camera.zoom = Vector2(zx, zy)
+	var z: float = min(zx, zy) * _minimap_pad
+	_minimap_camera.zoom = Vector2(z, z)
 
-	var view_h_world: float = mm_h * zy
+	var view_h_world: float = mm_h / z
 	var cx: float = (wx0 + wx1) * 0.5
 	var cy: float = wy0 + view_h_world * 0.5
-
 	_minimap_camera.position = Vector2(cx, cy)
 
-	_minimap_camera.limit_left = int(wx0)
-	_minimap_camera.limit_right = int(wx1)
-	_minimap_camera.limit_top = int(wy1)
-	_minimap_camera.limit_bottom = int(wy0)
-
-	_minimap_camera.make_current()
 	_update_minimap_viewbox()
 
-func _minimap_refit_bottom_anchor() -> void:
+func _minimap_fit_full_world_bottom_aligned() -> void:
+	if _minimap_camera == null or _minimap_texture_rect == null:
+		return
+
+	# World extents (world Node2D uses +Y up; minimap world also uses scale (1, -1))
+	var wx0: float = _world_left_px()
+	var wx1: float = _world_right_px()
+	var wy0: float = _world_bottom_px()   # negative
+	var wy1: float = _world_top_px()      # positive
+	var world_w: float = wx1 - wx0
+	var world_h: float = wy1 - wy0
+	if world_w <= 0.0 or world_h <= 0.0:
+		return
+
+	# Minimap size in pixels (viewport target)
+	var mm_w: float = _minimap_texture_rect.size.x
+	var mm_h: float = _minimap_texture_rect.size.y
+	if mm_w <= 0.0 or mm_h <= 0.0:
+		return
+
+	# Uniform zoom from WIDTH; then compute visible height in world units
+	# (Godot Camera2D.zoom is a scale: larger values show "less" world)
+	var zoom_scale: float = mm_w / world_w
+	_minimap_camera.zoom = Vector2(zoom_scale, zoom_scale)
+
+	var vis_h: float = mm_h / zoom_scale  # world units visible vertically
+
+	# Center X; bottom-align Y so ground (wy0) sits at the bottom of the minimap
+	var cx: float = (wx0 + wx1) * 0.5
+	var cy: float = wy0 + vis_h * 0.5
+	_minimap_camera.position = Vector2(cx, cy)
+
+	# Clamp to world (flipped-Y world: top uses wy1, bottom uses wy0)
+	_minimap_camera.limit_left   = int(wx0)
+	_minimap_camera.limit_right  = int(wx1)
+	_minimap_camera.limit_top    = int(wy1)
+	_minimap_camera.limit_bottom = int(wy0)
+
+	if _minimap_camera.is_inside_tree():
+		_minimap_camera.make_current()
+	else:
+		_minimap_camera.call_deferred("make_current")
+	_update_minimap_viewbox()
+
+func _minimap_fit_world_exact() -> void:
 	if _minimap_camera == null or _minimap_texture_rect == null:
 		return
 	var wx0: float = _world_left_px()
@@ -337,16 +357,92 @@ func _minimap_refit_bottom_anchor() -> void:
 	var wy1: float = _world_top_px()
 	var world_w: float = wx1 - wx0
 	var world_h: float = wy1 - wy0
+	if world_w <= 0.0 or world_h <= 0.0:
+		return
 	var mm_w: float = _minimap_texture_rect.size.x
 	var mm_h: float = _minimap_texture_rect.size.y
+
+	# Fit whole world exactly into minimap
 	var zx: float = mm_w / world_w
 	var zy: float = mm_h / world_h
 	_minimap_camera.zoom = Vector2(zx, zy)
-	var view_h_world: float = mm_h * zy
+
+	# Center between world top and bottom so the “ground line” (y=0) sits correctly
+	var cx: float = (wx0 + wx1) * 0.5
+	var cy: float = (wy0 + wy1) * 0.5
+	_minimap_camera.position = Vector2(cx, cy)
+
+	# Clamp to world; note flipped-Y world uses top=wy1, bottom=wy0
+	_minimap_camera.limit_left   = int(wx0)
+	_minimap_camera.limit_right  = int(wx1)
+	_minimap_camera.limit_top    = int(wy1)
+	_minimap_camera.limit_bottom = int(wy0)
+
+	if _minimap_camera.is_inside_tree():
+		_minimap_camera.make_current()
+	else:
+		_minimap_camera.call_deferred("make_current")
+	_update_minimap_viewbox()
+	
+
+func _minimap_fit_world_bottom_aligned() -> void:
+	var wx0: float = _world_left_px()
+	var wx1: float = _world_right_px()
+	var wy0: float = _world_bottom_px()
+	var wy1: float = _world_top_px()
+	var world_w: float = wx1 - wx0
+	var world_h: float = wy1 - wy0
+	if world_w <= 0.0 or world_h <= 0.0:
+		return
+
+	var mm_w: float = _minimap_texture_rect.size.x
+	var mm_h: float = _minimap_texture_rect.size.y
+	if mm_w <= 0.0 or mm_h <= 0.0:
+		return
+
+	var zx: float = mm_w / world_w
+	var zy: float = mm_h / world_h
+	var z: float = min(zx, zy) * _minimap_pad
+	_minimap_camera.zoom = Vector2(z, z)
+
+	var view_h_world: float = mm_h / z
 	var cx: float = (wx0 + wx1) * 0.5
 	var cy: float = wy0 + view_h_world * 0.5
 	_minimap_camera.position = Vector2(cx, cy)
-	_update_minimap_viewbox()
+	func _init(h: OpenTower) -> void:
+		host = h
+	func _draw() -> void:
+		var wx0: float = host._world_left_px()
+		var wx1: float = host._world_right_px()
+		var wy0: float = host._world_bottom_px()
+		var wy1: float = host._world_top_px()
+		# Big padding ensures full fill even if camera drifts a bit
+		var pad: float = 10000.0
+		var left: float = wx0 - pad
+		var right: float = wx1 + pad
+		var topv: float = wy1 + pad
+		var botv: float = wy0 - pad
+		draw_rect(Rect2(Vector2(left, botv), Vector2(right - left, topv - botv)), host.SKY_COLOR, true)
+
+class MiniGrid:
+	extends Node2D
+	var host: OpenTower
+	func _init(h: OpenTower) -> void:
+		host = h
+	func _draw() -> void:
+		var left: float = host._world_left_px()
+		var right: float = host._world_right_px()
+		var top_px: float = host._world_top_px()
+		var bottom_px: float = host._world_bottom_px()
+		var step: float = float(host.CELL_SIZE)
+		var x: float = left
+		while x <= right + 0.5:
+			draw_line(Vector2(x, bottom_px), Vector2(x, top_px), host.GRID_COLOR, 1.0)
+			x += step
+		var y: float = bottom_px
+		while y <= top_px + 0.5:
+			draw_line(Vector2(left, y), Vector2(right, y), host.GRID_COLOR, 1.0)
+			y += step
 
 class MiniBackground:
 	extends Node2D
@@ -359,8 +455,8 @@ class MiniBackground:
 		var wy0: float = gt._world_bottom_px()
 		var wy1: float = gt._world_top_px()
 		var world_w: float = wx1 - wx0
-		var sky_color := Color(0.62, 0.82, 1.0)
-		var ground_color := Color(0.42, 0.29, 0.14)
+		var sky_color := gt.SKY_COLOR          # was hardcoded
+		var ground_color := gt.GROUND_COLOR    # was hardcoded
 		draw_rect(Rect2(Vector2(wx0, 0.0), Vector2(world_w, wy1 - 0.0)), sky_color, true)
 		draw_rect(Rect2(Vector2(wx0, wy0), Vector2(world_w, 0.0 - wy0)), ground_color, true)
 
@@ -494,10 +590,9 @@ func _update_minimap_viewbox() -> void:
 	var mm_w: float = _minimap_texture_rect.size.x
 	var mm_h: float = _minimap_texture_rect.size.y
 
-	var cam_zoom: Vector2 = _camera.zoom
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var view_w: float = vp_size.x * cam_zoom.x
-	var view_h: float = vp_size.y * cam_zoom.y
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var view_w: float = vp.x * _camera.zoom.x
+	var view_h: float = vp.y * _camera.zoom.y
 
 	var cx: float = _camera.position.x
 	var cy: float = _camera.position.y
@@ -563,8 +658,6 @@ func _on_minimap_gui_input(event: InputEvent) -> void:
 		elif event is InputEventMouseMotion and _minimap_dragging:
 			_minimap_set_main_camera_to_mouse()
 
-	_update_minimap_viewbox()
-
 var _minimap_dragging: bool = false
 
 func _minimap_zoom_main(factor: float) -> void:
@@ -583,7 +676,7 @@ func _minimap_zoom_main(factor: float) -> void:
 	var world_h: float = wy1 - wy0
 
 	var focus_x: float = wx0 + (mm_pos.x / mm_size.x) * world_w
-	var focus_y: float = wy1 - (mm_pos.y / mm_size.y) * world_h
+	var focus_y: float = wy0 + (mm_pos.y / mm_size.y) * world_h
 
 	var new_zoom: Vector2 = _camera.zoom * factor
 	new_zoom.x = clamp(new_zoom.x, 0.25, 8.0)
@@ -923,7 +1016,7 @@ func _setup_autosave() -> void:
 	_autosave_timer.autostart = true
 	_autosave_timer.one_shot = false
 	add_child(_autosave_timer)
-	_autosave_timer.timeout.connect(Callable(self, "_on_autosave_timeout"))
+	_autosave_timer.timeout.connect(func(): save_game(_save_slot))
 
 	var tree := get_tree()
 	if tree.has_signal("about_to_quit"):
@@ -970,7 +1063,7 @@ func _build_save_hud() -> void:
 	slot_dd.add_item("Slot 2", 1)
 	slot_dd.add_item("Slot 3", 2)
 	slot_dd.selected = _save_slot
-	slot_dd.item_selected.connect(Callable(self, "_on_slot_changed"))
+	slot_dd.item_selected.connect(func(i): _on_slot_changed(i))
 	_save_row.add_child(slot_dd)
 
 	var slot_info: Label = Label.new()
@@ -1076,7 +1169,10 @@ func _ensure_toast_nodes() -> void:
 	_toast_timer.one_shot = true
 	_toast_timer.wait_time = 1.5
 	layer.add_child(_toast_timer)
-	_toast_timer.timeout.connect(Callable(self, "_on_toast_timeout"))
+	_toast_timer.timeout.connect(func():
+		if _toast_label != null:
+			_toast_label.visible = false
+	)
 
 func _show_toast(msg: String) -> void:
 	_ensure_toast_nodes()
@@ -1921,12 +2017,3 @@ func load_game(slot: int = _save_slot) -> bool:
 	var ok: bool = _deserialize_state(data)
 	_show_toast("Loaded slot " + str(slot + 1) if ok else "Load failed")
 	return ok
-
-
-func _on_autosave_timeout() -> void:
-	save_game(_save_slot)
-
-
-func _on_toast_timeout() -> void:
-	if _toast_label != null:
-		_toast_label.visible = false

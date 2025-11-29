@@ -1,4 +1,6 @@
 63f7b34db8d8cdea90c76aacccf841ec
-::res://::1764102969
-Main.tscn::PackedScene::-1::1763842178::0::1::::<><><>0<>0<><>::res://opentower.gd
-opentower.gd::GDScript::7641915183242836967::1764102683::0::1::::OpenTower<>Node2D<><>0<>0<><>::
+::res://::1764442159
+hotelroombasic.png::CompressedTexture2D::3305576093359318761::1764429185::1764429223::1::::<><><>0<>0<>a6bd4a84d67a7a2c49c5d4fe28e72c5e<>res://.godot/imported/hotelroombasic.png-8fd7f50db143bdaf1b0d6d163a132367.ctex::
+Main.tscn::PackedScene::-1::1764429185::0::1::::<><><>0<>0<><>::res://opentower.gd
+opentower.gd::GDScript::154976209401726083::1764442134::0::1::::OpenTower<>Node2D<><>0<>0<><>::
+README.md::TextFile::-1::1764429185::0::1::::<><><>0<>0<><>::
