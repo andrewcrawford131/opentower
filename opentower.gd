@@ -8,6 +8,9 @@ extends Node2D
 @export var WORLD_WIDTH: int = 64           # cells left→right
 @export var CELL_SIZE: int = 128            # px per cell (grid scale)
 
+const MinimapControllerScript := preload("res://script/minimap.gd")
+var _minimap: MinimapController
+
 # ---- Colors ----
 @export var SKY_COLOR: Color = Color(0.55, 0.75, 1.0, 1.0)
 @export var GROUND_COLOR: Color = Color(0.45, 0.30, 0.12, 1.0)
@@ -28,21 +31,28 @@ const MEZZ3_COLOR: Color = Color(0.60, 0.35, 1.00, 0.70)  # violet, semi-opaque
 @export var OFFICE_COLOR: Color = Color(0.20, 0.70, 0.90, 1.0)
 @export var APARTMENT_COLOR: Color = Color(0.50, 0.90, 0.50, 1.0)
 
-
 func _get_cell_size() -> int:
 	return CELL_SIZE
 
 # ---- Internal nodes ----
 var _camera: Camera2D
 var _world: Node2D
-var _background: Node2D
-var _grid: Node2D
 
-# Hover helpers for build preview and BuildLayer
+# Pure draw layers (no scripts, no inner classes)
+var _bg_layer: Node2D
+var _build_layer: Node2D
+var _grid_layer: Node2D
+
+@export var GRID_SHOW_AXIS_LINES: bool = true
+
+# Hover helpers for build preview
 var _hover_cell: Vector2i = Vector2i.ZERO
 var _hover_valid: bool = false
-var _drag_overlay: DragOverlay = null
-#var _drag_overlay: Node2D = null
+
+# Drag-build (replaces DragOverlay class)
+var _drag_building: bool = false
+var _drag_a_cell: Vector2i = Vector2i.ZERO
+var _drag_b_cell: Vector2i = Vector2i.ZERO
 
 # ---- Minimap config / refs ----
 @export var MINIMAP_SIZE: int = 256
@@ -54,17 +64,6 @@ var _drag_overlay: DragOverlay = null
 @export var MINIMAP_VIEWBOX_BORDER: int = 2
 @export var MINIMAP_VIEWBOX_COLOR: Color = Color(1, 1, 1, 1)
 @export var MINIMAP_HOME_TEXT: String = "Home"
-
-var _minimap_overlay: Control
-var _minimap_viewbox: Panel
-var _minimap_home_btn: Button
-var _minimap_border: Panel
-var _minimap_layer: CanvasLayer
-var _minimap_viewport: SubViewport
-var _minimap_world: Node2D
-var _minimap_camera: Camera2D
-var _minimap_texture_rect: TextureRect
-var _mini_frustum: Node2D
 
 # ---- Camera pan/zoom config ----
 @export var PAN_SPEED: float = 800.0
@@ -89,261 +88,163 @@ func _world_top_px() -> float:
 func _world_bottom_px() -> float:
 	return -float(UNDERGROUND_DEPTH * CELL_SIZE)
 
-# ---- Lifecycle ----
-# ---- Inner classes (hoisted) ----
-class MiniBackground:
-	extends Node2D
-	var gt: OpenTower
-	func _init(_gt: OpenTower) -> void:
-		gt = _gt
-	func _draw() -> void:
-		var wx0: float = gt._world_left_px()
-		var wx1: float = gt._world_right_px()
-		var wy0: float = gt._world_bottom_px()
-		var wy1: float = gt._world_top_px()
-		var world_w: float = wx1 - wx0
-		var sky_color := Color(0.62, 0.82, 1.0)
-		var ground_color := Color(0.42, 0.29, 0.14)
-		draw_rect(Rect2(Vector2(wx0, 0.0), Vector2(world_w, wy1 - 0.0)), sky_color, true)
-		draw_rect(Rect2(Vector2(wx0, wy0), Vector2(world_w, 0.0 - wy0)), ground_color, true)
-class DragOverlay:
-	extends Control
-	var host: OpenTower = null
-	var dragging: bool = false
-	var a_cell: Vector2i
-	var b_cell: Vector2i
+func _on_bg_layer_draw() -> void:
+	if not is_instance_valid(_bg_layer):
+		return
 
-	func _init(h: Node) -> void:
-		host = h
+	var left: float = _world_left_px()
+	var right: float = _world_right_px()
+	var top_px: float = _world_top_px()
+	var bottom_px: float = _world_bottom_px()
 
-	func _ready() -> void:
-		set_anchors_preset(Control.PRESET_FULL_RECT)
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
-		set_process_unhandled_input(true)
+	# Sky (0 -> top)
+	if top_px > 0.0:
+		var sky_rect := Rect2(Vector2(left, 0.0), Vector2(right - left, top_px))
+		_bg_layer.draw_rect(sky_rect, SKY_COLOR, true)
 
-	func _unhandled_input(event: InputEvent) -> void:
-		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-			if event.pressed:
-				dragging = true
-				a_cell = host._drag_get_mouse_cell()
-				b_cell = a_cell
-				queue_redraw()
-			else:
-				if dragging:
-					b_cell = host._drag_get_mouse_cell()
-					var rect := host._drag_rect_from(a_cell, b_cell)
-					host._drag_place_rect(rect)
-					dragging = false
-					queue_redraw()
-		elif event is InputEventMouseMotion:
-			if dragging:
-				b_cell = host._drag_get_mouse_cell()
-				queue_redraw()
+	# Ground (bottom -> 0)
+	if bottom_px < 0.0:
+		var ground_rect := Rect2(Vector2(left, bottom_px), Vector2(right - left, -bottom_px))
+		_bg_layer.draw_rect(ground_rect, GROUND_COLOR, true)
 
-	func _draw() -> void:
-		if not dragging:
-			return
-		var rect: Rect2i = host._drag_rect_from(a_cell, b_cell)
-		var cs: int = host._get_cell_size()
-		var rp := Vector2(rect.position.x * cs, rect.position.y * cs)
-		var rs := Vector2(rect.size.x * cs, rect.size.y * cs)
-		# Only to indicate the drag region (low alpha)
-		draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.12), true)
-		draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.8), false)
-class Background:
-	extends Node2D
-	var host: OpenTower
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		var left: float = host._world_left_px()
-		var right: float = host._world_right_px()
-		var top_px: float = host._world_top_px()
-		var bottom_px: float = host._world_bottom_px()
-		# Sky (0 -> top)
-		if top_px > 0.0:
-			var sky_rect: Rect2 = Rect2(Vector2(left, 0.0), Vector2(right - left, top_px))
-			draw_rect(sky_rect, host.SKY_COLOR, true)
-		# Ground (bottom -> 0)
-		if bottom_px < 0.0:
-			var ground_rect: Rect2 = Rect2(Vector2(left, bottom_px), Vector2(right - left, -bottom_px))
-			draw_rect(ground_rect, host.GROUND_COLOR, true)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
-class MiniFrustum:
-	extends Node2D
-	var host: OpenTower
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		if host == null or host._camera == null:
-			return
-		var vp_size: Vector2 = host.get_viewport().get_visible_rect().size
-		var view_w: float = vp_size.x * host._camera.zoom.x
-		var view_h: float = vp_size.y * host._camera.zoom.y
-		var half: Vector2 = Vector2(view_w, view_h) * 0.5
-		var top_left: Vector2 = host._camera.position - half
-		var top_right: Vector2 = top_left + Vector2(view_w, 0.0)
-		var bottom_left: Vector2 = top_left + Vector2(0.0, view_h)
-		var bottom_right: Vector2 = top_left + Vector2(view_w, view_h)
-		var c: Color = host.MINIMAP_FRUSTUM_COLOR
-		var th: float = 2.0
-		draw_line(top_left, top_right, c, th)
-		draw_line(top_right, bottom_right, c, th)
-		draw_line(bottom_right, bottom_left, c, th)
-		draw_line(bottom_left, top_left, c, th)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
-class Grid:
-	extends Node2D
-	var host: OpenTower
-	@export var show_axis_lines: bool = true
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		var left: float = host._world_left_px()
-		var right: float = host._world_right_px()
-		var top_px: float = host._world_top_px()
-		var bottom_px: float = host._world_bottom_px()
-		var step: float = float(host.CELL_SIZE)
+func _on_grid_layer_draw() -> void:
+	if not is_instance_valid(_grid_layer):
+		return
 
-		var x: float = left
-		while x <= right + 0.5:
-			draw_line(Vector2(x, bottom_px), Vector2(x, top_px), host.GRID_COLOR, 1.0)
-			x += step
+	var left: float = _world_left_px()
+	var right: float = _world_right_px()
+	var top_px: float = _world_top_px()
+	var bottom_px: float = _world_bottom_px()
+	var step: float = float(CELL_SIZE)
 
-		var y: float = bottom_px
-		while y <= top_px + 0.5:
-			draw_line(Vector2(left, y), Vector2(right, y), host.GRID_COLOR, 1.0)
-			y += step
+	var x: float = left
+	while x <= right + 0.5:
+		_grid_layer.draw_line(Vector2(x, bottom_px), Vector2(x, top_px), GRID_COLOR, 1.0)
+		x += step
 
-		if show_axis_lines:
-			draw_line(Vector2(0, bottom_px), Vector2(0, top_px), host.AXIS_COLOR, 2.0)
-			draw_line(Vector2(left, 0), Vector2(right, 0), host.AXIS_COLOR, 2.0)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
+	var y: float = bottom_px
+	while y <= top_px + 0.5:
+		_grid_layer.draw_line(Vector2(left, y), Vector2(right, y), GRID_COLOR, 1.0)
+		y += step
 
-# ---- Optional live tweaking: if Inspector values change in-editor, redraw. ----
-class BuildLayer:
-	extends Node2D
-	var host: OpenTower
+	if GRID_SHOW_AXIS_LINES:
+		_grid_layer.draw_line(Vector2(0, bottom_px), Vector2(0, top_px), AXIS_COLOR, 2.0)
+		_grid_layer.draw_line(Vector2(left, 0), Vector2(right, 0), AXIS_COLOR, 2.0)
 
-	func _init(h: OpenTower) -> void:
-		host = h
+func _on_build_layer_draw() -> void:
+	if not is_instance_valid(_build_layer):
+		return
 
-	func _draw() -> void:
+	# Floors (draw first)
+	for key in _floors.keys():
+		var cell: Vector2i = key
+		var c: Color = FLOOR_GROUND_COLOR if (cell.y == 0) else (FLOOR_UP_COLOR if (cell.y > 0) else FLOOR_DOWN_COLOR)
+		_draw_cell(_build_layer, cell, c)
 
-		# Floors (draw first)
-		for key in host._floors.keys():
-			var cell: Vector2i = key
-			var c: Color = host.FLOOR_GROUND_COLOR if (cell.y == 0) else (host.FLOOR_UP_COLOR if (cell.y > 0) else host.FLOOR_DOWN_COLOR)
-			_draw_cell(cell, c)
+	# Elevators
+	for key in _elevators.keys():
+		var cell: Vector2i = key
+		_draw_elevator(_build_layer, cell, ELEVATOR_COLOR)
 
-		# Elevators
-		for key in host._elevators.keys():
-			var cell: Vector2i = key
-			_draw_elevator(cell, host.ELEVATOR_COLOR)
+	# Stairs
+	for key in _stairs.keys():
+		var cell: Vector2i = key
+		_draw_stairs(_build_layer, cell, STAIRS_COLOR)
 
-		# Stairs
-		for key in host._stairs.keys():
-			var cell: Vector2i = key
-			_draw_stairs(cell, host.STAIRS_COLOR)
+	# Escalators (legacy dict kept if you still use it)
+	for key in _escalators.keys():
+		var cell: Vector2i = key
+		_draw_escalator(_build_layer, cell, ESCALATOR_COLOR)
 
-		# Escalators
-		for key in host._escalators.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_COLOR)
-		for key in host._escalators_up.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_UP_COLOR)
-		for key in host._escalators_down.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_DOWN_COLOR)
+	for key in _escalators_up.keys():
+		var cell: Vector2i = key
+		_draw_escalator(_build_layer, cell, ESCALATOR_UP_COLOR)
 
-		# Mezz layers (draw last so their colors remain visible)
-		for key in host._mezz2_cells.keys():
-			var cell2: Vector2i = key
-			_draw_cell(cell2, host.MEZZ2_COLOR)
-		for key in host._mezz3_cells.keys():
-			var cell3: Vector2i = key
-			_draw_cell(cell3, host.MEZZ3_COLOR)
+	for key in _escalators_down.keys():
+		var cell: Vector2i = key
+		_draw_escalator(_build_layer, cell, ESCALATOR_DOWN_COLOR)
 
-		# Hover preview (spans match mezz)
-		var hc: Vector2i = host._hover_cell
-		if host._in_bounds(hc):
-			var span := 1
-			var did_draw := false
+	# Mezz layers (draw last so their colors remain visible)
+	for key in _mezz2_cells.keys():
+		_draw_cell(_build_layer, key, MEZZ2_COLOR)
+	for key in _mezz3_cells.keys():
+		_draw_cell(_build_layer, key, MEZZ3_COLOR)
 
-			match host._tool:
-				OpenTower.BuildTool.DEMOLISH:
-					var cells := host._demolish_target_cells(hc)
-					var col: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
-					for c in cells:
-						if host._in_bounds(c):
-							var r := Rect2(
-								Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
-								Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
-							)
-							draw_rect(r, col, true)
-					did_draw = true
+	# Hover preview (spans match mezz)
+	var hc: Vector2i = _hover_cell
+	if _in_bounds(hc):
+		var span := 1
+		var did_draw := false
 
-				OpenTower.BuildTool.MEZZ2:
-					span = 2
-				OpenTower.BuildTool.MEZZ3:
-					span = 3
-				OpenTower.BuildTool.ELEVATOR, OpenTower.BuildTool.STAIRS, OpenTower.BuildTool.ESCALATOR_UP:
-					span = host._mezz_span_height(hc)
-				OpenTower.BuildTool.ESCALATOR_DOWN:
-					span = 1
-				_:
-					span = 1
-
-			if not did_draw:
-				var col2: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
-				for i in range(span):
-					var c := Vector2i(hc.x, hc.y + i)
-					if host._in_bounds(c):
+		match _tool:
+			BuildTool.DEMOLISH:
+				var cells := _demolish_target_cells(hc)
+				var col: Color = HOVER_OK_COLOR if _hover_valid else HOVER_BAD_COLOR
+				for c in cells:
+					if _in_bounds(c):
 						var r := Rect2(
-							Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
-							Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+							Vector2(float(c.x * CELL_SIZE), float(c.y * CELL_SIZE)),
+							Vector2(float(CELL_SIZE), float(CELL_SIZE))
 						)
-						draw_rect(r, col2, true)
+						_build_layer.draw_rect(r, col, true)
+				did_draw = true
 
-	func _cell_center(cell: Vector2i) -> Vector2:
-		return Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+			BuildTool.MEZZ2:
+				span = 2
+			BuildTool.MEZZ3:
+				span = 3
+			BuildTool.ELEVATOR, BuildTool.STAIRS, BuildTool.ESCALATOR_UP:
+				span = _mezz_span_height(hc)
+			BuildTool.ESCALATOR_DOWN:
+				span = 1
+			_:
+				span = 1
 
-	func _draw_cell(cell: Vector2i, color: Color) -> void:
-		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var size: Vector2 = Vector2(host.CELL_SIZE, host.CELL_SIZE)
-		var rect: Rect2 = Rect2(tl, size)
-		draw_rect(rect, color, true)
+		if not did_draw:
+			var col2: Color = HOVER_OK_COLOR if _hover_valid else HOVER_BAD_COLOR
+			for i in range(span):
+				var c := Vector2i(hc.x, hc.y + i)
+				if _in_bounds(c):
+					var r := Rect2(
+						Vector2(float(c.x * CELL_SIZE), float(c.y * CELL_SIZE)),
+						Vector2(float(CELL_SIZE), float(CELL_SIZE))
+					)
+					_build_layer.draw_rect(r, col2, true)
 
-	func _draw_elevator(cell: Vector2i, color: Color) -> void:
-		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var w: float = float(host.CELL_SIZE) * 0.25
-		var h: float = float(host.CELL_SIZE)
-		var rect_pos: Vector2 = Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y)
-		var rect: Rect2 = Rect2(rect_pos, Vector2(w, h))
-		draw_rect(rect, color, true)
+	# Drag-build rectangle preview (replaces DragOverlay drawing)
+	if _drag_building:
+		var rect: Rect2i = _drag_rect_from(_drag_a_cell, _drag_b_cell)
+		var rp := Vector2(float(rect.position.x * CELL_SIZE), float(rect.position.y * CELL_SIZE))
+		var rs := Vector2(float(rect.size.x * CELL_SIZE), float(rect.size.y * CELL_SIZE))
+		_build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.12), true)
+		_build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.8), false)
 
-	func _draw_stairs(cell: Vector2i, color: Color) -> void:
-		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var s := float(host.CELL_SIZE)
-		var poly := PackedVector2Array([tl, tl + Vector2(s, 0), tl + Vector2(0, s)])
-		draw_colored_polygon(poly, color)
+func _draw_cell(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
+	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
+	layer.draw_rect(Rect2(tl, Vector2(float(CELL_SIZE), float(CELL_SIZE))), color, true)
 
-	func _draw_escalator(cell: Vector2i, color: Color) -> void:
-		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var w := float(host.CELL_SIZE) * 0.6
-		var h := float(host.CELL_SIZE) * 0.25
-		var pos := Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y + (float(host.CELL_SIZE) - h) * 0.5)
-		draw_rect(Rect2(pos, Vector2(w, h)), color, true)
+func _draw_elevator(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
+	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
+	var w := float(CELL_SIZE) * 0.25
+	var h := float(CELL_SIZE)
+	var rect_pos := Vector2(tl.x + (float(CELL_SIZE) - w) * 0.5, tl.y)
+	layer.draw_rect(Rect2(rect_pos, Vector2(w, h)), color, true)
+
+func _draw_stairs(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
+	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
+	var s := float(CELL_SIZE)
+	var poly := PackedVector2Array([tl, tl + Vector2(s, 0), tl + Vector2(0, s)])
+	layer.draw_colored_polygon(poly, color)
+
+func _draw_escalator(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
+	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
+	var w := float(CELL_SIZE) * 0.6
+	var h := float(CELL_SIZE) * 0.25
+	var pos := Vector2(tl.x + (float(CELL_SIZE) - w) * 0.5, tl.y + (float(CELL_SIZE) - h) * 0.5)
+	layer.draw_rect(Rect2(pos, Vector2(w, h)), color, true)
 
 func _ready() -> void:
-	# Why: Ensure crisp 1:1 by matching current screen size.
+	# Window setup
 	var screen_id: int = DisplayServer.window_get_current_screen()
 	var size: Vector2i = DisplayServer.screen_get_size(screen_id)
 	if size.x > 0 and size.y > 0:
@@ -351,163 +252,60 @@ func _ready() -> void:
 	ProjectSettings.set_setting("display/window/stretch/mode", "canvas_items")
 	ProjectSettings.set_setting("display/window/stretch/aspect", "expand")
 
-	# Camera at (0,0) and current.
+	# Camera
 	_camera = Camera2D.new()
 	_camera.position = Vector2.ZERO
 	_camera.enabled = true
 	add_child(_camera)
 
-	# World container with reversed Y (so +Y is up).
+	# World container with reversed Y (so +Y is up)
 	_world = Node2D.new()
 	_world.name = "World"
 	_world.scale = Vector2(1, -1)
 	add_child(_world)
 
-	# Add background + grid as drawables (inner classes below).
-	_background = Background.new(self)
-	_background.z_index = -10
-	_world.add_child(_background)
+	# Draw layers (plain Node2D; draw handled via connected functions)
+	_bg_layer = Node2D.new()
+	_bg_layer.name = "BgLayer"
+	_bg_layer.z_index = -10
+	_world.add_child(_bg_layer)
+	_bg_layer.connect("draw", Callable(self, "_on_bg_layer_draw"))
 
-	_grid = Grid.new(self)
-	_grid.z_index = 10
-	_world.add_child(_grid)
+	_build_layer = Node2D.new()
+	_build_layer.name = "BuildLayer"
+	_build_layer.z_index = 5
+	_world.add_child(_build_layer)
+	_build_layer.connect("draw", Callable(self, "_on_build_layer_draw"))
 
-	# ----- Minimap setup -----
-	_minimap_viewport = SubViewport.new()
-	_minimap_viewport.disable_3d = true
-	_minimap_viewport.transparent_bg = false
-	_minimap_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
-	_minimap_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	_minimap_viewport.size = Vector2i(MINIMAP_SIZE, MINIMAP_SIZE)
-	if _minimap_viewport.get_parent() == null:
-		add_child(_minimap_viewport)
+	_grid_layer = Node2D.new()
+	_grid_layer.name = "GridLayer"
+	_grid_layer.z_index = 10
+	_world.add_child(_grid_layer)
+	_grid_layer.connect("draw", Callable(self, "_on_grid_layer_draw"))
 
-	_minimap_world = Node2D.new()
-	_minimap_world.name = "MinimapWorld"
-	_minimap_world.scale = Vector2(1, -1)
-	_minimap_viewport.add_child(_minimap_world)
+	# Minimap
+	_minimap = MinimapControllerScript.new()
+	add_child(_minimap)
+	_minimap.setup(self, {
+		"size": MINIMAP_SIZE,
+		"margin": MINIMAP_MARGIN,
+		"frustum_color": MINIMAP_FRUSTUM_COLOR,
+		"border": MINIMAP_BORDER,
+		"border_bg": MINIMAP_BORDER_BG,
+		"border_color": MINIMAP_BORDER_COLOR,
+		"viewbox_border": MINIMAP_VIEWBOX_BORDER,
+		"viewbox_color": MINIMAP_VIEWBOX_COLOR,
+		"home_text": MINIMAP_HOME_TEXT,
+	})
 
-	if _minimap_viewport.get_parent() == null:
-		add_child(_minimap_viewport)
-
-	var mini_bg2: MiniBackground = MiniBackground.new(self)
-	mini_bg2.z_index = -10
-	_minimap_world.add_child(mini_bg2)
-
-	var mini_build: BuildLayer = BuildLayer.new(self)
-	mini_build.z_index = 5
-	_minimap_world.add_child(mini_build)
-
-	_mini_frustum = MiniFrustum.new(self)
-	_mini_frustum.z_index = 10
-	_minimap_world.add_child(_mini_frustum)
-
-	_minimap_camera = Camera2D.new()
-	_minimap_camera.enabled = true
-	_minimap_camera.position = Vector2.ZERO
-	_minimap_viewport.add_child(_minimap_camera)
-	_minimap_camera.make_current()
-
-	_minimap_camera = Camera2D.new()
-	_minimap_camera.enabled = true
-	_minimap_camera.position = Vector2.ZERO
-	_minimap_viewport.add_child(_minimap_camera)
-
-	_minimap_layer = CanvasLayer.new()
-	_minimap_layer.layer = 100
-	add_child(_minimap_layer)
-
-	_minimap_texture_rect = TextureRect.new()
-	_minimap_texture_rect.texture = _minimap_viewport.get_texture()
-	_minimap_texture_rect.custom_minimum_size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
-	_minimap_texture_rect.size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
-
-	# Place top-right with margin (with border panel)
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-
-	# Create border panel (once)
-	if _minimap_border == null:
-		_minimap_border = Panel.new()
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = MINIMAP_BORDER_BG
-		sb.border_width_top = MINIMAP_BORDER
-		sb.border_width_bottom = MINIMAP_BORDER
-		sb.border_width_left = MINIMAP_BORDER
-		sb.border_width_right = MINIMAP_BORDER
-		sb.border_color = MINIMAP_BORDER_COLOR
-		_minimap_border.add_theme_stylebox_override("panel", sb)
-		_minimap_border.custom_minimum_size = Vector2(
-			float(MINIMAP_SIZE + MINIMAP_BORDER * 2),
-			float(MINIMAP_SIZE + MINIMAP_BORDER * 2)
-		)
-		_minimap_layer.add_child(_minimap_border)
-
-	# Position border panel
-	var panel_w: float = float(MINIMAP_SIZE + MINIMAP_BORDER * 2)
-	var _panel_h: float = float(MINIMAP_SIZE + MINIMAP_BORDER * 2)
-	_minimap_border.position = Vector2(
-		vp_size.x - panel_w - float(MINIMAP_MARGIN),
-		float(MINIMAP_MARGIN)
-	)
-
-	# Texture inside panel with offset = border
-	_minimap_texture_rect.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-	if _minimap_texture_rect.get_parent() != _minimap_border:
-		_minimap_border.add_child(_minimap_texture_rect)
-		# Overlay for interactive viewbox on top of the texture
-		_minimap_overlay = Control.new()
-		_minimap_overlay.custom_minimum_size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
-		_minimap_overlay.size = Vector2(MINIMAP_SIZE, MINIMAP_SIZE)
-		_minimap_overlay.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-		_minimap_overlay.mouse_filter = Control.MOUSE_FILTER_PASS
-		_minimap_border.add_child(_minimap_overlay)
-
-		# Click/drag anywhere in overlay to navigate (same handler as texture)
-		if not _minimap_overlay.is_connected("gui_input", Callable(self, "_on_minimap_gui_input")):
-			_minimap_overlay.connect("gui_input", Callable(self, "_on_minimap_gui_input"))
-
-		# Viewbox panel (outline only)
-		_minimap_viewbox = Panel.new()
-		var vb := StyleBoxFlat.new()
-		vb.bg_color = Color(0, 0, 0, 0)
-		vb.border_width_top = MINIMAP_VIEWBOX_BORDER
-		vb.border_width_bottom = MINIMAP_VIEWBOX_BORDER
-		vb.border_width_left = MINIMAP_VIEWBOX_BORDER
-		vb.border_width_right = MINIMAP_VIEWBOX_BORDER
-		vb.border_color = MINIMAP_VIEWBOX_COLOR
-		_minimap_viewbox.add_theme_stylebox_override("panel", vb)
-		_minimap_overlay.add_child(_minimap_viewbox)
-
-		# Home/reset button inside border, bottom-left
-		_minimap_home_btn = Button.new()
-		_minimap_home_btn.text = MINIMAP_HOME_TEXT
-		_minimap_home_btn.custom_minimum_size = Vector2(64, 22)
-		_minimap_home_btn.size = Vector2(64, 22)
-		_minimap_home_btn.position = Vector2(float(MINIMAP_BORDER) + 6.0, float(MINIMAP_BORDER) + float(MINIMAP_SIZE) - 28.0)
-		_minimap_home_btn.focus_mode = Control.FOCUS_NONE
-		_minimap_home_btn.mouse_filter = Control.MOUSE_FILTER_STOP
-		if not _minimap_home_btn.is_connected("pressed", Callable(self, "_on_minimap_home_pressed")):
-			_minimap_home_btn.connect("pressed", Callable(self, "_on_minimap_home_pressed"))
-		_minimap_border.add_child(_minimap_home_btn)
-		_minimap_relayout()
-
-	# Guarded connect to avoid duplicate connection error
-	if not _minimap_texture_rect.is_connected("gui_input", Callable(self, "_on_minimap_gui_input")):
-		_minimap_texture_rect.connect("gui_input", Callable(self, "_on_minimap_gui_input"))
-
-	if _minimap_viewport.get_parent() == null:
-		add_child(_minimap_viewport)
-	_minimap_layer.visible = true
-	_update_minimap_viewbox()
-
-	# Redraw on screen resize.
+	# Resize hook + HUD
 	get_window().connect("size_changed", Callable(self, "_on_screen_resized"))
-
 	_init_building()
-	
-	_drag_overlay = DragOverlay.new(self)
-	_drag_overlay.set_deferred("z_index", RenderingServer.CANVAS_ITEM_Z_MAX - 1)
-	add_child(_drag_overlay)
+
+	# Initial draw
+	_bg_layer.queue_redraw()
+	_build_layer.queue_redraw()
+	_grid_layer.queue_redraw()
 
 func _on_screen_resized() -> void:
 	# …your existing resize logic…
@@ -528,89 +326,10 @@ func _process(delta: float) -> void:
 	if move != Vector2.ZERO:
 		_camera.position += move.normalized() * PAN_SPEED * delta
 		_clamp_camera_to_world()
-		_update_minimap_viewbox()
+		if is_instance_valid(_minimap):
+			_minimap.update_viewbox()
 
 	_update_hover_hint()
-	if _minimap_world != null:
-		_minimap_world.propagate_call("queue_redraw")
-
-
-func _minimap_relayout() -> void:
-	if _minimap_viewport == null or _minimap_texture_rect == null or _minimap_border == null:
-		return
-
-	var wx0: float = _world_left_px()
-	var wx1: float = _world_right_px()
-	var wy0: float = _world_bottom_px()
-	var wy1: float = _world_top_px()
-	var world_w: float = wx1 - wx0
-	var world_h: float = wy1 - wy0
-	if world_w <= 0.0 or world_h <= 0.0:
-		return
-
-	var mm_w: float = float(MINIMAP_SIZE)
-	var mm_h: float = float(MINIMAP_SIZE)
-
-	_minimap_viewport.size = Vector2i(int(round(mm_w)), int(round(mm_h)))
-	_minimap_texture_rect.custom_minimum_size = Vector2(mm_w, mm_h)
-	_minimap_texture_rect.size = Vector2(mm_w, mm_h)
-
-	if is_instance_valid(_minimap_overlay):
-		_minimap_overlay.custom_minimum_size = Vector2(mm_w, mm_h)
-		_minimap_overlay.size = Vector2(mm_w, mm_h)
-		_minimap_overlay.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-
-	var panel_w: float = mm_w + float(MINIMAP_BORDER) * 2.0
-	var panel_h: float = mm_h + float(MINIMAP_BORDER) * 2.0
-	_minimap_border.custom_minimum_size = Vector2(panel_w, panel_h)
-
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	_minimap_border.position = Vector2(
-		vp_size.x - panel_w - float(MINIMAP_MARGIN),
-		float(MINIMAP_MARGIN)
-	)
-	_minimap_texture_rect.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-
-	if is_instance_valid(_minimap_home_btn):
-		_minimap_home_btn.position = Vector2(float(MINIMAP_BORDER) + 6.0, float(MINIMAP_BORDER) + mm_h - 28.0)
-
-	var zx: float = mm_w / world_w
-	var zy: float = mm_h / world_h
-	_minimap_camera.zoom = Vector2(zx, zy)
-
-	var view_h_world: float = mm_h * zy
-	var cx: float = (wx0 + wx1) * 0.5
-	var cy: float = wy0 + view_h_world * 0.5
-
-	_minimap_camera.position = Vector2(cx, cy)
-
-	_minimap_camera.limit_left = int(wx0)
-	_minimap_camera.limit_right = int(wx1)
-	_minimap_camera.limit_top = int(wy1)
-	_minimap_camera.limit_bottom = int(wy0)
-
-	_minimap_camera.make_current()
-	_update_minimap_viewbox()
-
-func _minimap_refit_bottom_anchor() -> void:
-	if _minimap_camera == null or _minimap_texture_rect == null:
-		return
-	var wx0: float = _world_left_px()
-	var wx1: float = _world_right_px()
-	var wy0: float = _world_bottom_px()
-	var wy1: float = _world_top_px()
-	var world_w: float = wx1 - wx0
-	var world_h: float = wy1 - wy0
-	var mm_w: float = _minimap_texture_rect.size.x
-	var mm_h: float = _minimap_texture_rect.size.y
-	var zx: float = mm_w / world_w
-	var zy: float = mm_h / world_h
-	_minimap_camera.zoom = Vector2(zx, zy)
-	var view_h_world: float = mm_h * zy
-	var cx: float = (wx0 + wx1) * 0.5
-	var cy: float = wy0 + view_h_world * 0.5
-	_minimap_camera.position = Vector2(cx, cy)
-	_update_minimap_viewbox()
 
 func _drag_get_mouse_cell() -> Vector2i:
 	if has_method("_mouse_to_cell"):
@@ -634,6 +353,10 @@ func _drag_place_rect(rect: Rect2i) -> void:
 func _drag_place_single(cell: Vector2i) -> void:
 	_attempt_build(cell)
 
+func _mouse_to_cell() -> Vector2i:
+	var local: Vector2 = _world.to_local(get_global_mouse_position())
+	return _world_to_cell(local)
+
 func _unhandled_input(event: InputEvent) -> void:
 	# Hover + drag pan
 	if event is InputEventMouseMotion:
@@ -643,18 +366,19 @@ func _unhandled_input(event: InputEvent) -> void:
 			var local: Vector2 = _world.to_local(get_global_mouse_position())
 			_hover_cell = _world_to_cell(local)
 			_hover_valid = _can_build(_tool, _hover_cell)
-			_hover_hint_label = Label.new()
-			_hud_hint_label = _hover_hint_label  # <-- add this line (prevents Nil)
-# = "" if _hover_valid else _why_blocked(_tool, _hover_cell)
 			if has_method("_can_build"):
 				_hover_valid = _can_build(_tool, _hover_cell)
-			if is_instance_valid(_build_layer):
-				_build_layer.queue_redraw()
+						# Update drag-build rectangle
+			if _drag_building:
+				_drag_b_cell = _mouse_to_cell()
+				if is_instance_valid(_build_layer):
+					_build_layer.queue_redraw()
 		# Pan while dragging
 		if _is_dragging:
 			_camera.position -= mm.relative
 			_clamp_camera_to_world()
-			_update_minimap_viewbox()
+			if is_instance_valid(_minimap):
+				_minimap.update_viewbox()
 
 	# Mouse buttons (pan toggle, wheel zoom, left-click build)
 	if event is InputEventMouseButton:
@@ -670,11 +394,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			_zoom_by(1.0 + ZOOM_STEP)  # zoom out
 			return
 		# Build on LMB
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			if is_instance_valid(_world) and has_method("_world_to_cell") and has_method("_attempt_build"):
-				var local: Vector2 = _world.to_local(get_global_mouse_position())
-				var cell: Vector2i = _world_to_cell(local)
-				_attempt_build(cell)
+				# Build drag (LMB) - replaces DragOverlay class
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_drag_building = true
+				_drag_a_cell = _mouse_to_cell()
+				_drag_b_cell = _drag_a_cell
+				if is_instance_valid(_build_layer):
+					_build_layer.queue_redraw()
+			else:
+				if _drag_building:
+					_drag_building = false
+					var rect := _drag_rect_from(_drag_a_cell, _drag_b_cell)
+					_drag_place_rect(rect) # places via _attempt_build()
+					if is_instance_valid(_build_layer):
+						_build_layer.queue_redraw()
+			return
 
 	# Keyboard (zoom, fullscreen, escape)
 	if event is InputEventKey:
@@ -690,8 +425,6 @@ func _unhandled_input(event: InputEvent) -> void:
 					win.mode = Window.MODE_FULLSCREEN
 				else:
 					win.mode = Window.MODE_WINDOWED
-				if is_instance_valid(_minimap_layer):
-					_minimap_layer.visible = true
 				_on_screen_resized()
 			elif k.keycode == KEY_ESCAPE:
 				var win2: Window = get_window()
@@ -747,172 +480,26 @@ func _zoom_by(factor: float) -> void:
 	var clamped: float = clamp(z.x, MIN_ZOOM, MAX_ZOOM)
 	_camera.zoom = Vector2(clamped, clamped)
 	_clamp_camera_to_world()
-	_update_minimap_viewbox()
-
-func _update_minimap_viewbox() -> void:
-	if _minimap_overlay == null or _camera == null or _minimap_texture_rect == null:
-		return
-
-	var wx0: float = _world_left_px()
-	var wx1: float = _world_right_px()
-	var wy0: float = _world_bottom_px()
-	var wy1: float = _world_top_px()
-	var world_w: float = wx1 - wx0
-	var world_h: float = wy1 - wy0
-	if world_w <= 0.0 or world_h <= 0.0:
-		return
-
-	var mm_w: float = _minimap_texture_rect.size.x
-	var mm_h: float = _minimap_texture_rect.size.y
-
-	var cam_zoom: Vector2 = _camera.zoom
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var view_w: float = vp_size.x * cam_zoom.x
-	var view_h: float = vp_size.y * cam_zoom.y
-
-	var cx: float = _camera.position.x
-	var cy: float = _camera.position.y
-	var vx0: float = clamp(cx - view_w * 0.5, wx0, wx1)
-	var vx1: float = clamp(cx + view_w * 0.5, wx0, wx1)
-	var vy0: float = clamp(cy - view_h * 0.5, wy0, wy1)
-	var vy1: float = clamp(cy + view_h * 0.5, wy0, wy1)
-
-	var rx0: float = (vx0 - wx0) / world_w * mm_w
-	var rx1: float = (vx1 - wx0) / world_w * mm_w
-	var ry0: float = (vy0 - wy0) / (wy1 - wy0) * mm_h
-	var ry1: float = (vy1 - wy0) / (wy1 - wy0) * mm_h
-
-	var rect_pos: Vector2 = Vector2(rx0, ry0)
-	var rect_size: Vector2 = Vector2(max(2.0, rx1 - rx0), max(2.0, ry1 - ry0))
-
-	_minimap_overlay.position = Vector2(float(MINIMAP_BORDER), float(MINIMAP_BORDER))
-	_minimap_overlay.custom_minimum_size = Vector2(mm_w, mm_h)
-	if _minimap_overlay.has_method("set_viewbox"):
-		_minimap_overlay.call("set_viewbox", rect_pos, rect_size)
-
-func _on_minimap_home_pressed() -> void:
-	_camera.position = Vector2.ZERO
-	_clamp_camera_to_world()
-	_update_minimap_viewbox()
-
-func _mm_y_to_world(mm_y: float, mm_h: float, wy0: float, wy1: float) -> float:
-	var world_h: float = wy1 - wy0
-	if _minimap_world != null and _minimap_world.scale.y < 0.0:
-		return wy1 - (mm_y / mm_h) * world_h
-	else:
-		return wy0 + (mm_y / mm_h) * world_h
-
-func _world_y_to_mm(world_y: float, mm_h: float, wy0: float, wy1: float) -> float:
-	var world_h: float = wy1 - wy0
-	if _minimap_world != null and _minimap_world.scale.y < 0.0:
-		return (wy1 - world_y) / world_h * mm_h
-	else:
-		return (world_y - wy0) / world_h * mm_h
-
-func _process2(_delta: float) -> void:
-	if is_instance_valid(_mini_frustum):
-		_mini_frustum.queue_redraw()
-
-func _on_minimap_gui_input(event: InputEvent) -> void:
-	if _camera == null or _minimap_texture_rect == null:
-		return
-
-	if event is InputEventMouseButton:
-		var mbe := event as InputEventMouseButton
-		if mbe.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_minimap_zoom_main(0.9)
-			return
-		if mbe.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_minimap_zoom_main(1.1)
-			return
-		if mbe.pressed and (mbe.button_index == MOUSE_BUTTON_LEFT or mbe.button_index == MOUSE_BUTTON_RIGHT):
-			_minimap_set_main_camera_to_mouse()
-			_minimap_dragging = true
-		elif not mbe.pressed and (mbe.button_index == MOUSE_BUTTON_LEFT or mbe.button_index == MOUSE_BUTTON_RIGHT):
-			_minimap_dragging = false
-
-		elif event is InputEventMouseMotion and _minimap_dragging:
-			_minimap_set_main_camera_to_mouse()
-
-	_update_minimap_viewbox()
-
-var _minimap_dragging: bool = false
-
-func _minimap_zoom_main(factor: float) -> void:
-	if _camera == null or _minimap_texture_rect == null:
-		return
-	var mm_pos: Vector2 = _minimap_texture_rect.get_local_mouse_position()
-	var mm_size: Vector2 = _minimap_texture_rect.size
-	if mm_pos.x < 0.0 or mm_pos.y < 0.0 or mm_pos.x > mm_size.x or mm_pos.y > mm_size.y:
-		return
-
-	var wx0: float = _world_left_px()
-	var wx1: float = _world_right_px()
-	var wy0: float = _world_bottom_px()
-	var wy1: float = _world_top_px()
-	var world_w: float = wx1 - wx0
-	var world_h: float = wy1 - wy0
-
-	var focus_x: float = wx0 + (mm_pos.x / mm_size.x) * world_w
-	var focus_y: float = wy1 - (mm_pos.y / mm_size.y) * world_h
-
-	var new_zoom: Vector2 = _camera.zoom * factor
-	new_zoom.x = clamp(new_zoom.x, 0.25, 8.0)
-	new_zoom.y = clamp(new_zoom.y, 0.25, 8.0)
-	_camera.zoom = new_zoom
-
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var half_w: float = 0.5 * vp.x * _camera.zoom.x
-	var half_h: float = 0.5 * vp.y * _camera.zoom.y
-	var tx: float = clamp(focus_x, wx0 + half_w, wx1 - half_w)
-	var ty: float = clamp(focus_y, wy0 + half_h, wy1 - half_h)
-	_camera.position = Vector2(tx, ty)
-
-	_update_minimap_viewbox()
-
-func _minimap_set_main_camera_to_mouse() -> void:
-	var mm_pos: Vector2 = _minimap_texture_rect.get_local_mouse_position()
-	var mm_size: Vector2 = _minimap_texture_rect.size
-	if mm_pos.x < 0.0 or mm_pos.y < 0.0 or mm_pos.x > mm_size.x or mm_pos.y > mm_size.y:
-		return
-
-	var wx0: float = _world_left_px()
-	var wx1: float = _world_right_px()
-	var wy0: float = _world_bottom_px()
-	var wy1: float = _world_top_px()
-	var world_w: float = wx1 - wx0
-	var world_h: float = wy1 - wy0
-	if world_w <= 0.0 or world_h <= 0.0:
-		return
-
-	var target_x: float = wx0 + (mm_pos.x / mm_size.x) * world_w
-	var target_y: float = wy0 + (mm_pos.y / mm_size.y) * (wy1 - wy0)
-
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var half_w: float = 0.5 * vp_size.x * _camera.zoom.x
-	var half_h: float = 0.5 * vp_size.y * _camera.zoom.y
-	target_x = clamp(target_x, wx0 + half_w, wx1 - half_w)
-	target_y = clamp(target_y, wy0 + half_h, wy1 - half_h)
-
-	_camera.position = Vector2(target_x, target_y)
+	if is_instance_valid(_minimap):
+		_minimap.update_viewbox()
 
 # ---- Inner classes (kept here to avoid separate scripts) ----
-func _notification(what:int) -> void:
+func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED or what == NOTIFICATION_VISIBILITY_CHANGED:
-		if is_instance_valid(_background):
-			_background.queue_redraw()
-		if is_instance_valid(_grid):
-			_grid.queue_redraw()
+		if is_instance_valid(_bg_layer):
+			_bg_layer.queue_redraw()
+		if is_instance_valid(_build_layer):
+			_build_layer.queue_redraw()
+		if is_instance_valid(_grid_layer):
+			_grid_layer.queue_redraw()
 
 # ---- Building system (floors & elevator) ----
 
 enum BuildTool { FLOORS, MEZZ2, MEZZ3, ELEVATOR, STAIRS, ESCALATOR_UP, ESCALATOR_DOWN, OFFICE, APARTMENT, DEMOLISH }
 
-
 var _tool: int = BuildTool.FLOORS
 var _floors: Dictionary = {}     # keys: Vector2i(x,y)
 var _elevators: Dictionary = {}  # keys: Vector2i(x,y)
-var _build_layer: Node2D
 var _hud_layer: CanvasLayer
 var _stairs: Dictionary = {}      # key: Vector2i(x,y)
 var _escalators: Dictionary = {}  # key: Vector2i(x,y)
@@ -928,11 +515,6 @@ var _hud_tool_chip: Label
 var _toolbar_panel: Control
 
 func _init_building() -> void:
-	# Build rendering layer between background and grid.
-	_build_layer = BuildLayer.new(self)
-	_build_layer.z_index = 5
-	_world.add_child(_build_layer)
-
 	# HUD: top toolbar
 	_hud_layer = CanvasLayer.new()
 	add_child(_hud_layer)
@@ -1847,7 +1429,8 @@ func _attempt_build(cell: Vector2i) -> void:
 				return
 
 	_build_layer.queue_redraw()
-	_update_minimap_viewbox()
+	if is_instance_valid(_minimap):
+		_minimap.update_viewbox()
 
 func _row_has_access(level_y: int) -> bool:
 	for key in _stairs.keys():
@@ -1859,11 +1442,6 @@ func _row_has_access(level_y: int) -> bool:
 		if c2.y == level_y:
 			return true
 	return false
-
-func _is_over_minimap(p_viewport: Vector2) -> bool:
-	if _minimap_border == null:
-		return false
-	return _minimap_border.get_global_rect().has_point(p_viewport)
 
 # ---- Draw layer for floors & elevators ----
 func _cascade_remove_unsupported() -> void:
