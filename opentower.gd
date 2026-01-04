@@ -10,6 +10,8 @@ extends Node2D
 
 const MinimapControllerScript := preload("res://script/minimap.gd")
 var _minimap: MinimapController
+const TowerRendererScript := preload("res://script/tower_renderer.gd")
+var _renderer: TowerRenderer
 
 # ---- Colors ----
 @export var SKY_COLOR: Color = Color(0.55, 0.75, 1.0, 1.0)
@@ -71,6 +73,38 @@ var _drag_b_cell: Vector2i = Vector2i.ZERO
 @export var MIN_ZOOM: float = 0.25
 @export var MAX_ZOOM: float = 3.0
 
+# Public aliases so TowerRenderer can treat OpenTower like TowerBuild for now.
+# After you declare: var _floors, _elevators, _stairs, etc...
+
+var floors: Dictionary:
+	get:
+		return _floors
+
+var elevators: Dictionary:
+	get:
+		return _elevators
+
+var stairs: Dictionary:
+	get:
+		return _stairs
+
+var escalators_up: Dictionary:
+	get:
+		return _escalators_up
+
+var escalators_down: Dictionary:
+	get:
+		return _escalators_down
+
+var mezz2_cells: Dictionary:
+	get:
+		return _mezz2_cells
+
+var mezz3_cells: Dictionary:
+	get:
+		return _mezz3_cells
+
+
 # ---- Camera pan config ----
 const PAN_MOUSE_BUTTONS: Dictionary = {MOUSE_BUTTON_RIGHT: true}
 var _is_dragging: bool = false
@@ -87,161 +121,6 @@ func _world_top_px() -> float:
 
 func _world_bottom_px() -> float:
 	return -float(UNDERGROUND_DEPTH * CELL_SIZE)
-
-func _on_bg_layer_draw() -> void:
-	if not is_instance_valid(_bg_layer):
-		return
-
-	var left: float = _world_left_px()
-	var right: float = _world_right_px()
-	var top_px: float = _world_top_px()
-	var bottom_px: float = _world_bottom_px()
-
-	# Sky (0 -> top)
-	if top_px > 0.0:
-		var sky_rect := Rect2(Vector2(left, 0.0), Vector2(right - left, top_px))
-		_bg_layer.draw_rect(sky_rect, SKY_COLOR, true)
-
-	# Ground (bottom -> 0)
-	if bottom_px < 0.0:
-		var ground_rect := Rect2(Vector2(left, bottom_px), Vector2(right - left, -bottom_px))
-		_bg_layer.draw_rect(ground_rect, GROUND_COLOR, true)
-
-func _on_grid_layer_draw() -> void:
-	if not is_instance_valid(_grid_layer):
-		return
-
-	var left: float = _world_left_px()
-	var right: float = _world_right_px()
-	var top_px: float = _world_top_px()
-	var bottom_px: float = _world_bottom_px()
-	var step: float = float(CELL_SIZE)
-
-	var x: float = left
-	while x <= right + 0.5:
-		_grid_layer.draw_line(Vector2(x, bottom_px), Vector2(x, top_px), GRID_COLOR, 1.0)
-		x += step
-
-	var y: float = bottom_px
-	while y <= top_px + 0.5:
-		_grid_layer.draw_line(Vector2(left, y), Vector2(right, y), GRID_COLOR, 1.0)
-		y += step
-
-	if GRID_SHOW_AXIS_LINES:
-		_grid_layer.draw_line(Vector2(0, bottom_px), Vector2(0, top_px), AXIS_COLOR, 2.0)
-		_grid_layer.draw_line(Vector2(left, 0), Vector2(right, 0), AXIS_COLOR, 2.0)
-
-func _on_build_layer_draw() -> void:
-	if not is_instance_valid(_build_layer):
-		return
-
-	# Floors (draw first)
-	for key in _floors.keys():
-		var cell: Vector2i = key
-		var c: Color = FLOOR_GROUND_COLOR if (cell.y == 0) else (FLOOR_UP_COLOR if (cell.y > 0) else FLOOR_DOWN_COLOR)
-		_draw_cell(_build_layer, cell, c)
-
-	# Elevators
-	for key in _elevators.keys():
-		var cell: Vector2i = key
-		_draw_elevator(_build_layer, cell, ELEVATOR_COLOR)
-
-	# Stairs
-	for key in _stairs.keys():
-		var cell: Vector2i = key
-		_draw_stairs(_build_layer, cell, STAIRS_COLOR)
-
-	# Escalators (legacy dict kept if you still use it)
-	for key in _escalators.keys():
-		var cell: Vector2i = key
-		_draw_escalator(_build_layer, cell, ESCALATOR_COLOR)
-
-	for key in _escalators_up.keys():
-		var cell: Vector2i = key
-		_draw_escalator(_build_layer, cell, ESCALATOR_UP_COLOR)
-
-	for key in _escalators_down.keys():
-		var cell: Vector2i = key
-		_draw_escalator(_build_layer, cell, ESCALATOR_DOWN_COLOR)
-
-	# Mezz layers (draw last so their colors remain visible)
-	for key in _mezz2_cells.keys():
-		_draw_cell(_build_layer, key, MEZZ2_COLOR)
-	for key in _mezz3_cells.keys():
-		_draw_cell(_build_layer, key, MEZZ3_COLOR)
-
-	# Hover preview (spans match mezz)
-	var hc: Vector2i = _hover_cell
-	if _in_bounds(hc):
-		var span := 1
-		var did_draw := false
-
-		match _tool:
-			BuildTool.DEMOLISH:
-				var cells := _demolish_target_cells(hc)
-				var col: Color = HOVER_OK_COLOR if _hover_valid else HOVER_BAD_COLOR
-				for c in cells:
-					if _in_bounds(c):
-						var r := Rect2(
-							Vector2(float(c.x * CELL_SIZE), float(c.y * CELL_SIZE)),
-							Vector2(float(CELL_SIZE), float(CELL_SIZE))
-						)
-						_build_layer.draw_rect(r, col, true)
-				did_draw = true
-
-			BuildTool.MEZZ2:
-				span = 2
-			BuildTool.MEZZ3:
-				span = 3
-			BuildTool.ELEVATOR, BuildTool.STAIRS, BuildTool.ESCALATOR_UP:
-				span = _mezz_span_height(hc)
-			BuildTool.ESCALATOR_DOWN:
-				span = 1
-			_:
-				span = 1
-
-		if not did_draw:
-			var col2: Color = HOVER_OK_COLOR if _hover_valid else HOVER_BAD_COLOR
-			for i in range(span):
-				var c := Vector2i(hc.x, hc.y + i)
-				if _in_bounds(c):
-					var r := Rect2(
-						Vector2(float(c.x * CELL_SIZE), float(c.y * CELL_SIZE)),
-						Vector2(float(CELL_SIZE), float(CELL_SIZE))
-					)
-					_build_layer.draw_rect(r, col2, true)
-
-	# Drag-build rectangle preview (replaces DragOverlay drawing)
-	if _drag_building:
-		var rect: Rect2i = _drag_rect_from(_drag_a_cell, _drag_b_cell)
-		var rp := Vector2(float(rect.position.x * CELL_SIZE), float(rect.position.y * CELL_SIZE))
-		var rs := Vector2(float(rect.size.x * CELL_SIZE), float(rect.size.y * CELL_SIZE))
-		_build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.12), true)
-		_build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.8), false)
-
-func _draw_cell(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
-	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
-	layer.draw_rect(Rect2(tl, Vector2(float(CELL_SIZE), float(CELL_SIZE))), color, true)
-
-func _draw_elevator(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
-	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
-	var w := float(CELL_SIZE) * 0.25
-	var h := float(CELL_SIZE)
-	var rect_pos := Vector2(tl.x + (float(CELL_SIZE) - w) * 0.5, tl.y)
-	layer.draw_rect(Rect2(rect_pos, Vector2(w, h)), color, true)
-
-func _draw_stairs(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
-	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
-	var s := float(CELL_SIZE)
-	var poly := PackedVector2Array([tl, tl + Vector2(s, 0), tl + Vector2(0, s)])
-	layer.draw_colored_polygon(poly, color)
-
-func _draw_escalator(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
-	var tl := Vector2(float(cell.x * CELL_SIZE), float(cell.y * CELL_SIZE))
-	var w := float(CELL_SIZE) * 0.6
-	var h := float(CELL_SIZE) * 0.25
-	var pos := Vector2(tl.x + (float(CELL_SIZE) - w) * 0.5, tl.y + (float(CELL_SIZE) - h) * 0.5)
-	layer.draw_rect(Rect2(pos, Vector2(w, h)), color, true)
 
 func _ready() -> void:
 	# Window setup
@@ -264,26 +143,32 @@ func _ready() -> void:
 	_world.scale = Vector2(1, -1)
 	add_child(_world)
 
-	# Draw layers (plain Node2D; draw handled via connected functions)
+	# Create layers FIRST
 	_bg_layer = Node2D.new()
 	_bg_layer.name = "BgLayer"
 	_bg_layer.z_index = -10
 	_world.add_child(_bg_layer)
-	_bg_layer.connect("draw", Callable(self, "_on_bg_layer_draw"))
 
 	_build_layer = Node2D.new()
 	_build_layer.name = "BuildLayer"
 	_build_layer.z_index = 5
 	_world.add_child(_build_layer)
-	_build_layer.connect("draw", Callable(self, "_on_build_layer_draw"))
 
 	_grid_layer = Node2D.new()
 	_grid_layer.name = "GridLayer"
 	_grid_layer.z_index = 10
 	_world.add_child(_grid_layer)
-	_grid_layer.connect("draw", Callable(self, "_on_grid_layer_draw"))
 
-	# Minimap
+	# NOW create + hook renderer (after layers exist)
+	_renderer = TowerRendererScript.new()
+	add_child(_renderer)
+	_renderer.setup(self, self, _bg_layer, _build_layer, _grid_layer)
+
+	_bg_layer.connect("draw", Callable(_renderer, "draw_background"))
+	_grid_layer.connect("draw", Callable(_renderer, "draw_grid"))
+	_build_layer.connect("draw", Callable(_renderer, "draw_build"))
+
+	# Minimap, HUD, etc...
 	_minimap = MinimapControllerScript.new()
 	add_child(_minimap)
 	_minimap.setup(self, {
@@ -298,11 +183,9 @@ func _ready() -> void:
 		"home_text": MINIMAP_HOME_TEXT,
 	})
 
-	# Resize hook + HUD
 	get_window().connect("size_changed", Callable(self, "_on_screen_resized"))
 	_init_building()
 
-	# Initial draw
 	_bg_layer.queue_redraw()
 	_build_layer.queue_redraw()
 	_grid_layer.queue_redraw()
