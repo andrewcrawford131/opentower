@@ -6,7 +6,7 @@ extends Node2D
 @export var BUILD_HEIGHT: int = 64          # cells above ground (y>0)
 @export var UNDERGROUND_DEPTH: int = 15     # cells below ground (y<0, positive value)
 @export var WORLD_WIDTH: int = 64           # cells left→right
-@export var CELL_SIZE: int = 32             # px per cell (grid scale)
+@export var CELL_SIZE: int = 128            # px per cell (grid scale)
 
 # ---- Colors ----
 @export var SKY_COLOR: Color = Color(0.55, 0.75, 1.0, 1.0)
@@ -28,6 +28,10 @@ const MEZZ3_COLOR: Color = Color(0.60, 0.35, 1.00, 0.70)  # violet, semi-opaque
 @export var OFFICE_COLOR: Color = Color(0.20, 0.70, 0.90, 1.0)
 @export var APARTMENT_COLOR: Color = Color(0.50, 0.90, 0.50, 1.0)
 
+
+func _get_cell_size() -> int:
+	return CELL_SIZE
+
 # ---- Internal nodes ----
 var _camera: Camera2D
 var _world: Node2D
@@ -37,6 +41,8 @@ var _grid: Node2D
 # Hover helpers for build preview and BuildLayer
 var _hover_cell: Vector2i = Vector2i.ZERO
 var _hover_valid: bool = false
+var _drag_overlay: DragOverlay = null
+#var _drag_overlay: Node2D = null
 
 # ---- Minimap config / refs ----
 @export var MINIMAP_SIZE: int = 256
@@ -84,6 +90,258 @@ func _world_bottom_px() -> float:
 	return -float(UNDERGROUND_DEPTH * CELL_SIZE)
 
 # ---- Lifecycle ----
+# ---- Inner classes (hoisted) ----
+class MiniBackground:
+	extends Node2D
+	var gt: OpenTower
+	func _init(_gt: OpenTower) -> void:
+		gt = _gt
+	func _draw() -> void:
+		var wx0: float = gt._world_left_px()
+		var wx1: float = gt._world_right_px()
+		var wy0: float = gt._world_bottom_px()
+		var wy1: float = gt._world_top_px()
+		var world_w: float = wx1 - wx0
+		var sky_color := Color(0.62, 0.82, 1.0)
+		var ground_color := Color(0.42, 0.29, 0.14)
+		draw_rect(Rect2(Vector2(wx0, 0.0), Vector2(world_w, wy1 - 0.0)), sky_color, true)
+		draw_rect(Rect2(Vector2(wx0, wy0), Vector2(world_w, 0.0 - wy0)), ground_color, true)
+class DragOverlay:
+	extends Control
+	var host: OpenTower = null
+	var dragging: bool = false
+	var a_cell: Vector2i
+	var b_cell: Vector2i
+
+	func _init(h: Node) -> void:
+		host = h
+
+	func _ready() -> void:
+		set_anchors_preset(Control.PRESET_FULL_RECT)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_process_unhandled_input(true)
+
+	func _unhandled_input(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				dragging = true
+				a_cell = host._drag_get_mouse_cell()
+				b_cell = a_cell
+				queue_redraw()
+			else:
+				if dragging:
+					b_cell = host._drag_get_mouse_cell()
+					var rect := host._drag_rect_from(a_cell, b_cell)
+					host._drag_place_rect(rect)
+					dragging = false
+					queue_redraw()
+		elif event is InputEventMouseMotion:
+			if dragging:
+				b_cell = host._drag_get_mouse_cell()
+				queue_redraw()
+
+	func _draw() -> void:
+		if not dragging:
+			return
+		var rect: Rect2i = host._drag_rect_from(a_cell, b_cell)
+		var cs: int = host._get_cell_size()
+		var rp := Vector2(rect.position.x * cs, rect.position.y * cs)
+		var rs := Vector2(rect.size.x * cs, rect.size.y * cs)
+		# Only to indicate the drag region (low alpha)
+		draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.12), true)
+		draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.8), false)
+class Background:
+	extends Node2D
+	var host: OpenTower
+	func _init(h: OpenTower) -> void:
+		host = h
+	func _draw() -> void:
+		var left: float = host._world_left_px()
+		var right: float = host._world_right_px()
+		var top_px: float = host._world_top_px()
+		var bottom_px: float = host._world_bottom_px()
+		# Sky (0 -> top)
+		if top_px > 0.0:
+			var sky_rect: Rect2 = Rect2(Vector2(left, 0.0), Vector2(right - left, top_px))
+			draw_rect(sky_rect, host.SKY_COLOR, true)
+		# Ground (bottom -> 0)
+		if bottom_px < 0.0:
+			var ground_rect: Rect2 = Rect2(Vector2(left, bottom_px), Vector2(right - left, -bottom_px))
+			draw_rect(ground_rect, host.GROUND_COLOR, true)
+	func _notification(what:int) -> void:
+		if what == NOTIFICATION_VISIBILITY_CHANGED:
+			queue_redraw()
+class MiniFrustum:
+	extends Node2D
+	var host: OpenTower
+	func _init(h: OpenTower) -> void:
+		host = h
+	func _draw() -> void:
+		if host == null or host._camera == null:
+			return
+		var vp_size: Vector2 = host.get_viewport().get_visible_rect().size
+		var view_w: float = vp_size.x * host._camera.zoom.x
+		var view_h: float = vp_size.y * host._camera.zoom.y
+		var half: Vector2 = Vector2(view_w, view_h) * 0.5
+		var top_left: Vector2 = host._camera.position - half
+		var top_right: Vector2 = top_left + Vector2(view_w, 0.0)
+		var bottom_left: Vector2 = top_left + Vector2(0.0, view_h)
+		var bottom_right: Vector2 = top_left + Vector2(view_w, view_h)
+		var c: Color = host.MINIMAP_FRUSTUM_COLOR
+		var th: float = 2.0
+		draw_line(top_left, top_right, c, th)
+		draw_line(top_right, bottom_right, c, th)
+		draw_line(bottom_right, bottom_left, c, th)
+		draw_line(bottom_left, top_left, c, th)
+	func _notification(what:int) -> void:
+		if what == NOTIFICATION_VISIBILITY_CHANGED:
+			queue_redraw()
+class Grid:
+	extends Node2D
+	var host: OpenTower
+	@export var show_axis_lines: bool = true
+	func _init(h: OpenTower) -> void:
+		host = h
+	func _draw() -> void:
+		var left: float = host._world_left_px()
+		var right: float = host._world_right_px()
+		var top_px: float = host._world_top_px()
+		var bottom_px: float = host._world_bottom_px()
+		var step: float = float(host.CELL_SIZE)
+
+		var x: float = left
+		while x <= right + 0.5:
+			draw_line(Vector2(x, bottom_px), Vector2(x, top_px), host.GRID_COLOR, 1.0)
+			x += step
+
+		var y: float = bottom_px
+		while y <= top_px + 0.5:
+			draw_line(Vector2(left, y), Vector2(right, y), host.GRID_COLOR, 1.0)
+			y += step
+
+		if show_axis_lines:
+			draw_line(Vector2(0, bottom_px), Vector2(0, top_px), host.AXIS_COLOR, 2.0)
+			draw_line(Vector2(left, 0), Vector2(right, 0), host.AXIS_COLOR, 2.0)
+	func _notification(what:int) -> void:
+		if what == NOTIFICATION_VISIBILITY_CHANGED:
+			queue_redraw()
+
+# ---- Optional live tweaking: if Inspector values change in-editor, redraw. ----
+class BuildLayer:
+	extends Node2D
+	var host: OpenTower
+
+	func _init(h: OpenTower) -> void:
+		host = h
+
+	func _draw() -> void:
+
+		# Floors (draw first)
+		for key in host._floors.keys():
+			var cell: Vector2i = key
+			var c: Color = host.FLOOR_GROUND_COLOR if (cell.y == 0) else (host.FLOOR_UP_COLOR if (cell.y > 0) else host.FLOOR_DOWN_COLOR)
+			_draw_cell(cell, c)
+
+		# Elevators
+		for key in host._elevators.keys():
+			var cell: Vector2i = key
+			_draw_elevator(cell, host.ELEVATOR_COLOR)
+
+		# Stairs
+		for key in host._stairs.keys():
+			var cell: Vector2i = key
+			_draw_stairs(cell, host.STAIRS_COLOR)
+
+		# Escalators
+		for key in host._escalators.keys():
+			var cell: Vector2i = key
+			_draw_escalator(cell, host.ESCALATOR_COLOR)
+		for key in host._escalators_up.keys():
+			var cell: Vector2i = key
+			_draw_escalator(cell, host.ESCALATOR_UP_COLOR)
+		for key in host._escalators_down.keys():
+			var cell: Vector2i = key
+			_draw_escalator(cell, host.ESCALATOR_DOWN_COLOR)
+
+		# Mezz layers (draw last so their colors remain visible)
+		for key in host._mezz2_cells.keys():
+			var cell2: Vector2i = key
+			_draw_cell(cell2, host.MEZZ2_COLOR)
+		for key in host._mezz3_cells.keys():
+			var cell3: Vector2i = key
+			_draw_cell(cell3, host.MEZZ3_COLOR)
+
+		# Hover preview (spans match mezz)
+		var hc: Vector2i = host._hover_cell
+		if host._in_bounds(hc):
+			var span := 1
+			var did_draw := false
+
+			match host._tool:
+				OpenTower.BuildTool.DEMOLISH:
+					var cells := host._demolish_target_cells(hc)
+					var col: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
+					for c in cells:
+						if host._in_bounds(c):
+							var r := Rect2(
+								Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+								Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+							)
+							draw_rect(r, col, true)
+					did_draw = true
+
+				OpenTower.BuildTool.MEZZ2:
+					span = 2
+				OpenTower.BuildTool.MEZZ3:
+					span = 3
+				OpenTower.BuildTool.ELEVATOR, OpenTower.BuildTool.STAIRS, OpenTower.BuildTool.ESCALATOR_UP:
+					span = host._mezz_span_height(hc)
+				OpenTower.BuildTool.ESCALATOR_DOWN:
+					span = 1
+				_:
+					span = 1
+
+			if not did_draw:
+				var col2: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
+				for i in range(span):
+					var c := Vector2i(hc.x, hc.y + i)
+					if host._in_bounds(c):
+						var r := Rect2(
+							Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+							Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+						)
+						draw_rect(r, col2, true)
+
+	func _cell_center(cell: Vector2i) -> Vector2:
+		return Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+
+	func _draw_cell(cell: Vector2i, color: Color) -> void:
+		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+		var size: Vector2 = Vector2(host.CELL_SIZE, host.CELL_SIZE)
+		var rect: Rect2 = Rect2(tl, size)
+		draw_rect(rect, color, true)
+
+	func _draw_elevator(cell: Vector2i, color: Color) -> void:
+		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+		var w: float = float(host.CELL_SIZE) * 0.25
+		var h: float = float(host.CELL_SIZE)
+		var rect_pos: Vector2 = Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y)
+		var rect: Rect2 = Rect2(rect_pos, Vector2(w, h))
+		draw_rect(rect, color, true)
+
+	func _draw_stairs(cell: Vector2i, color: Color) -> void:
+		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+		var s := float(host.CELL_SIZE)
+		var poly := PackedVector2Array([tl, tl + Vector2(s, 0), tl + Vector2(0, s)])
+		draw_colored_polygon(poly, color)
+
+	func _draw_escalator(cell: Vector2i, color: Color) -> void:
+		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
+		var w := float(host.CELL_SIZE) * 0.6
+		var h := float(host.CELL_SIZE) * 0.25
+		var pos := Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y + (float(host.CELL_SIZE) - h) * 0.5)
+		draw_rect(Rect2(pos, Vector2(w, h)), color, true)
+
 func _ready() -> void:
 	# Why: Ensure crisp 1:1 by matching current screen size.
 	var screen_id: int = DisplayServer.window_get_current_screen()
@@ -121,7 +379,8 @@ func _ready() -> void:
 	_minimap_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
 	_minimap_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_minimap_viewport.size = Vector2i(MINIMAP_SIZE, MINIMAP_SIZE)
-	add_child(_minimap_viewport)
+	if _minimap_viewport.get_parent() == null:
+		add_child(_minimap_viewport)
 
 	_minimap_world = Node2D.new()
 	_minimap_world.name = "MinimapWorld"
@@ -236,7 +495,8 @@ func _ready() -> void:
 	if not _minimap_texture_rect.is_connected("gui_input", Callable(self, "_on_minimap_gui_input")):
 		_minimap_texture_rect.connect("gui_input", Callable(self, "_on_minimap_gui_input"))
 
-	add_child(_minimap_viewport)
+	if _minimap_viewport.get_parent() == null:
+		add_child(_minimap_viewport)
 	_minimap_layer.visible = true
 	_update_minimap_viewbox()
 
@@ -244,6 +504,10 @@ func _ready() -> void:
 	get_window().connect("size_changed", Callable(self, "_on_screen_resized"))
 
 	_init_building()
+	
+	_drag_overlay = DragOverlay.new(self)
+	_drag_overlay.set_deferred("z_index", RenderingServer.CANVAS_ITEM_Z_MAX - 1)
+	add_child(_drag_overlay)
 
 func _on_screen_resized() -> void:
 	# …your existing resize logic…
@@ -348,21 +612,27 @@ func _minimap_refit_bottom_anchor() -> void:
 	_minimap_camera.position = Vector2(cx, cy)
 	_update_minimap_viewbox()
 
-class MiniBackground:
-	extends Node2D
-	var gt: OpenTower
-	func _init(_gt: OpenTower) -> void:
-		gt = _gt
-	func _draw() -> void:
-		var wx0: float = gt._world_left_px()
-		var wx1: float = gt._world_right_px()
-		var wy0: float = gt._world_bottom_px()
-		var wy1: float = gt._world_top_px()
-		var world_w: float = wx1 - wx0
-		var sky_color := Color(0.62, 0.82, 1.0)
-		var ground_color := Color(0.42, 0.29, 0.14)
-		draw_rect(Rect2(Vector2(wx0, 0.0), Vector2(world_w, wy1 - 0.0)), sky_color, true)
-		draw_rect(Rect2(Vector2(wx0, wy0), Vector2(world_w, 0.0 - wy0)), ground_color, true)
+func _drag_get_mouse_cell() -> Vector2i:
+	if has_method("_mouse_to_cell"):
+		return call("_mouse_to_cell")
+	var p: Vector2 = get_global_mouse_position()
+	var cs: int = _get_cell_size()
+	return Vector2i(floori(p.x / cs), floori(p.y / cs))
+
+func _drag_rect_from(a: Vector2i, b: Vector2i) -> Rect2i:
+	var x0 := mini(a.x, b.x)
+	var x1 := maxi(a.x, b.x)
+	var y0 := mini(a.y, b.y)
+	var y1 := maxi(a.y, b.y)
+	return Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+
+func _drag_place_rect(rect: Rect2i) -> void:
+	for yy in range(rect.position.y, rect.position.y + rect.size.y):
+		for xx in range(rect.position.x, rect.position.x + rect.size.x):
+			_drag_place_single(Vector2i(xx, yy))
+
+func _drag_place_single(cell: Vector2i) -> void:
+	_attempt_build(cell)
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Hover + drag pan
@@ -373,8 +643,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			var local: Vector2 = _world.to_local(get_global_mouse_position())
 			_hover_cell = _world_to_cell(local)
 			_hover_valid = _can_build(_tool, _hover_cell)
-			if is_instance_valid(_hud_hint_label):
-				_hud_hint_label.text = "" if _hover_valid else _why_blocked(_tool, _hover_cell)
+			_hover_hint_label = Label.new()
+			_hud_hint_label = _hover_hint_label  # <-- add this line (prevents Nil)
+# = "" if _hover_valid else _why_blocked(_tool, _hover_cell)
 			if has_method("_can_build"):
 				_hover_valid = _can_build(_tool, _hover_cell)
 			if is_instance_valid(_build_layer):
@@ -626,85 +897,6 @@ func _minimap_set_main_camera_to_mouse() -> void:
 	_camera.position = Vector2(target_x, target_y)
 
 # ---- Inner classes (kept here to avoid separate scripts) ----
-class Background:
-	extends Node2D
-	var host: OpenTower
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		var left: float = host._world_left_px()
-		var right: float = host._world_right_px()
-		var top_px: float = host._world_top_px()
-		var bottom_px: float = host._world_bottom_px()
-		# Sky (0 -> top)
-		if top_px > 0.0:
-			var sky_rect: Rect2 = Rect2(Vector2(left, 0.0), Vector2(right - left, top_px))
-			draw_rect(sky_rect, host.SKY_COLOR, true)
-		# Ground (bottom -> 0)
-		if bottom_px < 0.0:
-			var ground_rect: Rect2 = Rect2(Vector2(left, bottom_px), Vector2(right - left, -bottom_px))
-			draw_rect(ground_rect, host.GROUND_COLOR, true)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
-
-class MiniFrustum:
-	extends Node2D
-	var host: OpenTower
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		if host == null or host._camera == null:
-			return
-		var vp_size: Vector2 = host.get_viewport().get_visible_rect().size
-		var view_w: float = vp_size.x * host._camera.zoom.x
-		var view_h: float = vp_size.y * host._camera.zoom.y
-		var half: Vector2 = Vector2(view_w, view_h) * 0.5
-		var top_left: Vector2 = host._camera.position - half
-		var top_right: Vector2 = top_left + Vector2(view_w, 0.0)
-		var bottom_left: Vector2 = top_left + Vector2(0.0, view_h)
-		var bottom_right: Vector2 = top_left + Vector2(view_w, view_h)
-		var c: Color = host.MINIMAP_FRUSTUM_COLOR
-		var th: float = 2.0
-		draw_line(top_left, top_right, c, th)
-		draw_line(top_right, bottom_right, c, th)
-		draw_line(bottom_right, bottom_left, c, th)
-		draw_line(bottom_left, top_left, c, th)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
-
-class Grid:
-	extends Node2D
-	var host: OpenTower
-	@export var show_axis_lines: bool = true
-	func _init(h: OpenTower) -> void:
-		host = h
-	func _draw() -> void:
-		var left: float = host._world_left_px()
-		var right: float = host._world_right_px()
-		var top_px: float = host._world_top_px()
-		var bottom_px: float = host._world_bottom_px()
-		var step: float = float(host.CELL_SIZE)
-
-		var x: float = left
-		while x <= right + 0.5:
-			draw_line(Vector2(x, bottom_px), Vector2(x, top_px), host.GRID_COLOR, 1.0)
-			x += step
-
-		var y: float = bottom_px
-		while y <= top_px + 0.5:
-			draw_line(Vector2(left, y), Vector2(right, y), host.GRID_COLOR, 1.0)
-			y += step
-
-		if show_axis_lines:
-			draw_line(Vector2(0, bottom_px), Vector2(0, top_px), host.AXIS_COLOR, 2.0)
-			draw_line(Vector2(left, 0), Vector2(right, 0), host.AXIS_COLOR, 2.0)
-	func _notification(what:int) -> void:
-		if what == NOTIFICATION_VISIBILITY_CHANGED:
-			queue_redraw()
-
-# ---- Optional live tweaking: if Inspector values change in-editor, redraw. ----
 func _notification(what:int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED or what == NOTIFICATION_VISIBILITY_CHANGED:
 		if is_instance_valid(_background):
@@ -875,9 +1067,8 @@ func _update_slot_info() -> void:
 	slot_info.text = "(" + ts + ")"
 
 func _get_tools_parent() -> Control:
-	# Helpers to consistently find the container where rows live;
-	# adjust if your structure differs.
-	return _background.get_parent() if _background != null else null
+	# Row container lives under the toolbar panel created in _init_building.
+	return _toolbar_panel
 
 func _ensure_hint_bar() -> void:
 	if _hover_hint_label != null:
@@ -1133,9 +1324,11 @@ func _in_bounds(cell: Vector2i) -> bool:
 		and cell.y >= -UNDERGROUND_DEPTH and cell.y <= BUILD_HEIGHT)
 
 func _update_hint_label(cell: Vector2i, ok: bool) -> void:
-	if not is_instance_valid(_hud_hint_label):
+	if not is_instance_valid(_hover_hint_label):
 		return
-	_hud_hint_label.text = "" if ok else _why_blocked(_tool, cell)
+	var msg := "" if ok else _why_blocked(_tool, cell)
+	_hover_hint_label.text = msg
+	_hover_hint_label.visible = msg != ""
 
 func _why_blocked(tool: int, cell: Vector2i) -> String:
 	if not _in_bounds(cell):
@@ -1149,7 +1342,6 @@ func _why_blocked(tool: int, cell: Vector2i) -> String:
 			if _mezz_reserved.has(cell):
 				return "Blocked: mezz footprint"
 
-			# Build-down: stairs, esc-down, or elevator above enables placing here.
 			var above := Vector2i(cell.x, cell.y + 1)
 			if _stairs.has(above) or _escalators_down.has(above) or _elevators.has(above):
 				return ""
@@ -1157,7 +1349,6 @@ func _why_blocked(tool: int, cell: Vector2i) -> String:
 			if cell.y == 0:
 				return "Ground blocked by mezz" if _any_mezz_on_ground() else ""
 
-			# Underground: support from above + adjacency OR vertical from above
 			if cell.y < 0:
 				var support_above := _floors.has(above) or _mezz2_cells.has(above) or _mezz3_cells.has(above)
 				if not support_above:
@@ -1167,7 +1358,6 @@ func _why_blocked(tool: int, cell: Vector2i) -> String:
 				var elev_here_und := _elevators.has(cell)
 				return "" if (adj_und or vertical_above or elev_here_und) else "Needs adjacent floor or vertical above"
 
-			# Above ground: existing rules
 			var below := Vector2i(cell.x, cell.y - 1)
 			var support_below := _floors.has(below) or _mezz2_cells.has(below) or _mezz3_cells.has(below)
 			if not support_below:
@@ -1183,7 +1373,11 @@ func _why_blocked(tool: int, cell: Vector2i) -> String:
 			return "" if (adj2 or vertical_below or elevator_here) else "Needs adjacent floor or vertical access"
 
 		BuildTool.MEZZ2, BuildTool.MEZZ3:
-			var span: int = 2 if tool == BuildTool.MEZZ2 else 3
+			var span: int
+			if tool == BuildTool.MEZZ2:
+				span = 2
+			else:
+				span = 3
 
 			# Mezz can only be placed at ground.
 			if cell.y != 0:
@@ -1201,7 +1395,6 @@ func _why_blocked(tool: int, cell: Vector2i) -> String:
 				if _floors.has(c2):
 					return "Occupied by floor"
 
-			# OK to place at ground (other checks handled elsewhere).
 			return ""
 
 		BuildTool.OFFICE:
@@ -1331,17 +1524,20 @@ func _mezz_demolish_cells(cell: Vector2i) -> Array[Vector2i]:
 	while _mezz2_cells.has(Vector2i(x, y - 1)) or _mezz3_cells.has(Vector2i(x, y - 1)):
 		y -= 1
 	var cells: Array[Vector2i] = []
-	# Full mezz-3 span?
+
+	# Full mezz-3 span
 	if _mezz3_cells.has(Vector2i(x, y)) and _mezz3_cells.has(Vector2i(x, y + 1)) and _mezz3_cells.has(Vector2i(x, y + 2)):
 		cells.append(Vector2i(x, y))
 		cells.append(Vector2i(x, y + 1))
 		cells.append(Vector2i(x, y + 2))
 		return cells
-	# Full mezz-2 span?
+
+	# Full mezz-2 span
 	if _mezz2_cells.has(Vector2i(x, y)) and _mezz2_cells.has(Vector2i(x, y + 1)):
 		cells.append(Vector2i(x, y))
 		cells.append(Vector2i(x, y + 1))
 		return cells
+
 	# Not on mezz; return just the clicked cell.
 	cells.append(cell)
 	return cells
@@ -1395,33 +1591,32 @@ func _can_build(tool: int, cell: Vector2i) -> bool:
 			if cell.y == 0:
 				return not _any_mezz_on_ground()
 
-			# ===== NEW: Underground branch (y < 0) =====
+			# ===== Underground branch (y < 0) =====
 			if cell.y < 0:
-				# Support must exist directly above (floor or mezz at y+1)
 				var support_above := _floors.has(above) or _mezz2_cells.has(above) or _mezz3_cells.has(above)
 				if not support_above:
 					return false
-				# Same-level adjacency on the -1 row
-				var adj := _floors.has(Vector2i(cell.x - 1, cell.y)) or _floors.has(Vector2i(cell.x + 1, cell.y))
-				# Vertical options from above also allow (nice-to-have)
-				var vertical_above := _stairs.has(above) or _escalators_down.has(above) or _elevators.has(above)
-				var elevator_here := _elevators.has(cell)   # floors may co-exist with elevator
-				return adj or vertical_above or elevator_here
 
-			# ===== Existing above-ground branch (y > 0) =====
+				var adj_und := _floors.has(Vector2i(cell.x - 1, cell.y)) or _floors.has(Vector2i(cell.x + 1, cell.y))
+				var vertical_above := _stairs.has(above) or _escalators_down.has(above) or _elevators.has(above)
+				var elev_here_und := _elevators.has(cell) # floors may co-exist with elevator
+				return adj_und or vertical_above or elev_here_und
+
+			# ===== Above-ground branch (y > 0) =====
 			var below := Vector2i(cell.x, cell.y - 1)
 			var support_below := _floors.has(below) or _mezz2_cells.has(below) or _mezz3_cells.has(below)
 			if not support_below:
 				return false
 
-			var adj_above := _floors.has(Vector2i(cell.x - 1, cell.y)) or _floors.has(Vector2i(cell.x + 1, cell.y))
-			var vaccess_below := _stairs.has(below) or _escalators_up.has(below)
-			var elev_here := _elevators.has(cell)
+			var adj2 := _floors.has(Vector2i(cell.x - 1, cell.y)) or _floors.has(Vector2i(cell.x + 1, cell.y))
+			var vertical_below := _stairs.has(below) or _escalators_up.has(below)
+			var elevator_here := _elevators.has(cell)
 
+			# If you want special mezz behavior later, keep this block; bool still required.
 			if _mezz2_cells.has(below) or _mezz3_cells.has(below):
-				return adj_above or vaccess_below or elev_here
+				return adj2 or vertical_below or elevator_here
 
-			return adj_above or vaccess_below or elev_here
+			return adj2 or vertical_below or elevator_here
 
 		BuildTool.ELEVATOR:
 			return not _elevators.has(cell) and not _stairs.has(cell) and not _escalators_up.has(cell) and not _escalators_down.has(cell)
@@ -1460,7 +1655,11 @@ func _can_build(tool: int, cell: Vector2i) -> bool:
 			return true
 
 		BuildTool.MEZZ2, BuildTool.MEZZ3:
-			var span: int = 2 if tool == BuildTool.MEZZ2 else 3
+			var span: int
+			if tool == BuildTool.MEZZ2:
+				span = 2
+			else:
+				span = 3
 
 			# Only allowed starting at ground.
 			if cell.y != 0:
@@ -1547,7 +1746,11 @@ func _attempt_build(cell: Vector2i) -> void:
 					_escalators_down[c] = true
 
 		BuildTool.MEZZ2, BuildTool.MEZZ3:
-			var span: int = 2 if _tool == BuildTool.MEZZ2 else 3
+			var span: int
+			if _tool == BuildTool.MEZZ2:
+				span = 2
+			else:
+				span = 3
 
 			# Only build at ground.
 			if cell.y != 0:
@@ -1663,119 +1866,6 @@ func _is_over_minimap(p_viewport: Vector2) -> bool:
 	return _minimap_border.get_global_rect().has_point(p_viewport)
 
 # ---- Draw layer for floors & elevators ----
-class BuildLayer:
-	extends Node2D
-	var host: OpenTower
-
-	func _init(h: OpenTower) -> void:
-		host = h
-
-	func _draw() -> void:
-
-		# Floors (draw first)
-		for key in host._floors.keys():
-			var cell: Vector2i = key
-			var c: Color = host.FLOOR_GROUND_COLOR if cell.y == 0 else (host.FLOOR_UP_COLOR if cell.y > 0 else host.FLOOR_DOWN_COLOR)
-			_draw_cell(cell, c)
-
-		# Elevators
-		for key in host._elevators.keys():
-			var cell: Vector2i = key
-			_draw_elevator(cell, host.ELEVATOR_COLOR)
-
-		# Stairs
-		for key in host._stairs.keys():
-			var cell: Vector2i = key
-			_draw_stairs(cell, host.STAIRS_COLOR)
-
-		# Escalators
-		for key in host._escalators.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_COLOR)
-		for key in host._escalators_up.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_UP_COLOR)
-		for key in host._escalators_down.keys():
-			var cell: Vector2i = key
-			_draw_escalator(cell, host.ESCALATOR_DOWN_COLOR)
-
-		# Mezz layers (draw last so their colors remain visible)
-		for key in host._mezz2_cells.keys():
-			var cell2: Vector2i = key
-			_draw_cell(cell2, host.MEZZ2_COLOR)
-		for key in host._mezz3_cells.keys():
-			var cell3: Vector2i = key
-			_draw_cell(cell3, host.MEZZ3_COLOR)
-
-		# Hover preview (spans match mezz)
-		var hc: Vector2i = host._hover_cell
-		if host._in_bounds(hc):
-			var span := 1
-			var did_draw := false
-
-			match host._tool:
-				OpenTower.BuildTool.DEMOLISH:
-					var cells := host._demolish_target_cells(hc)
-					for c in cells:
-						if host._in_bounds(c):
-							var r := Rect2(
-								Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
-								Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
-							)
-							draw_rect(r, host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR, true)
-					did_draw = true
-
-				OpenTower.BuildTool.MEZZ2:
-					span = 2
-				OpenTower.BuildTool.MEZZ3:
-					span = 3
-				OpenTower.BuildTool.ELEVATOR, OpenTower.BuildTool.STAIRS, OpenTower.BuildTool.ESCALATOR_UP:
-					span = host._mezz_span_height(hc)
-				OpenTower.BuildTool.ESCALATOR_DOWN:
-					span = 1
-				_:
-					span = 1
-
-			if not did_draw:
-				for i in range(span):
-					var c := Vector2i(hc.x, hc.y + i)
-					if host._in_bounds(c):
-						var r := Rect2(
-							Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
-							Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
-						)
-						draw_rect(r, host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR, true)
-
-	func _cell_center(cell: Vector2i) -> Vector2:
-		return Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-
-	func _draw_cell(cell: Vector2i, color: Color) -> void:
-		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var size: Vector2 = Vector2(host.CELL_SIZE, host.CELL_SIZE)
-		var rect: Rect2 = Rect2(tl, size)
-		draw_rect(rect, color, true)
-
-	func _draw_elevator(cell: Vector2i, color: Color) -> void:
-		var tl: Vector2 = Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var w: float = float(host.CELL_SIZE) * 0.25
-		var h: float = float(host.CELL_SIZE)
-		var rect_pos: Vector2 = Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y)
-		var rect: Rect2 = Rect2(rect_pos, Vector2(w, h))
-		draw_rect(rect, color, true)
-
-	func _draw_stairs(cell: Vector2i, color: Color) -> void:
-		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var s := float(host.CELL_SIZE)
-		var poly := PackedVector2Array([tl, tl + Vector2(s, 0), tl + Vector2(0, s)])
-		draw_colored_polygon(poly, color)
-
-	func _draw_escalator(cell: Vector2i, color: Color) -> void:
-		var tl := Vector2(float(cell.x * host.CELL_SIZE), float(cell.y * host.CELL_SIZE))
-		var w := float(host.CELL_SIZE) * 0.6
-		var h := float(host.CELL_SIZE) * 0.25
-		var pos := Vector2(tl.x + (float(host.CELL_SIZE) - w) * 0.5, tl.y + (float(host.CELL_SIZE) - h) * 0.5)
-		draw_rect(Rect2(pos, Vector2(w, h)), color, true)
-
 func _cascade_remove_unsupported() -> void:
 	var changed := true
 	while changed:
@@ -1919,13 +2009,15 @@ func load_game(slot: int = _save_slot) -> bool:
 	var data: Dictionary = parsed
 
 	var ok: bool = _deserialize_state(data)
-	_show_toast("Loaded slot " + str(slot + 1) if ok else "Load failed")
+	if ok:
+		_show_toast("Loaded slot " + str(slot + 1))
+	else:
+		_show_toast("Load failed")
 	return ok
 
 
 func _on_autosave_timeout() -> void:
 	save_game(_save_slot)
-
 
 func _on_toast_timeout() -> void:
 	if _toast_label != null:
