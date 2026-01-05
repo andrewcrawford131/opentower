@@ -12,7 +12,7 @@ signal count_changed(count: int)
 
 var host: Node = null        # OpenTower
 var build: Node = null       # TowerBuild
-var layer: Node2D = null
+var layer: Node2D = null     # PeopleLayer (Node2D inside _world)
 
 var _people: Array[PersonState] = []
 var _t_pop: float = 0.0
@@ -29,24 +29,16 @@ func setup(_host: Node, _build: Node, _layer: Node2D) -> void:
 	build = _build
 	layer = _layer
 
-	# If setup was called with wrong args, fail safely (prevents Nil floors crash)
-	if host == null or build == null:
-		push_warning("PeopleManager.setup(): host/build is null. Check OpenTower.setup call order/args.")
+	# Hard fail-safe to prevent Nil crashes / “no people”
+	if host == null or build == null or layer == null:
+		push_warning("PeopleManager.setup(): host/build/layer is null. Check OpenTower _ready() order/args.")
 		set_process(false)
 		return
-		
-	_desired_visitors = randi_range(1, MAX_VISITORS) # spawn some immediately
-
-	# keep population synced whenever building changes
-	if not build.is_connected("changed", Callable(self, "_on_build_changed")):
-		build.connect("changed", Callable(self, "_on_build_changed"))
 
 	set_process(true)
-	_reconcile_population(true)
-
+	_reconcile_population()
 	_emit_count_if_changed()
-	if layer != null:
-		layer.queue_redraw()
+	layer.queue_redraw()
 
 func get_people_count() -> int:
 	return _people.size()
@@ -57,46 +49,45 @@ func draw_people() -> void:
 	for p: PersonState in _people:
 		layer.draw_circle(p.pos, PERSON_RADIUS_PX, Color(1, 1, 1, 1))
 
-func on_build_changed() -> void:
-	_reconcile_population(true)
-	_emit_count_if_changed()
-	if layer != null:
-		layer.queue_redraw()
-
 func _process(delta: float) -> void:
-	if host == null or build == null:
+	if host == null or build == null or layer == null:
 		return
 
 	_t_vis += delta
 	_t_pop += delta
 
-	# visitors target changes occasionally
+	# Change visitor target occasionally
 	if _t_vis >= VISITOR_REFRESH_SEC:
 		_t_vis = 0.0
 		_desired_visitors = randi_range(0, MAX_VISITORS)
 
-	# reconcile population occasionally (and when base appears)
+	# Reconcile occasionally
 	if _t_pop >= POP_ADJUST_SEC:
 		_t_pop = 0.0
-		_reconcile_population(false)
+		_reconcile_population()
 		_emit_count_if_changed()
 
+	# ALWAYS sanitize + tick movement
+	_sanitize_people()
 	_tick_people(delta)
 
-	if layer != null:
-		layer.queue_redraw()
+	# Ensure old circles don’t “stick”
+	layer.queue_redraw()
 
 # --------------------------------------------------------------------
-# Population rules:
-# - Spawn ONLY once base exists (floor@0 or mezz@0)
-# - If tenants exist: exactly capacity people (stay in office/apartment)
+# Population rules
+# - Spawn only after base exists (floor@0 or mezz@0)
+# - If tenants exist: exactly capacity people (stay)
 # - Else: random visitors come/go
 # --------------------------------------------------------------------
 
-func _reconcile_population(_force: bool) -> void:
+func _reconcile_population() -> void:
 	if not _has_any_base():
 		if _people.size() > 0:
 			_people.clear()
+			if layer != null:
+				layer.queue_redraw()
+			_emit_count_if_changed()
 		return
 
 	var capacity: int = _capacity_people()
@@ -111,13 +102,11 @@ func _reconcile_population(_force: bool) -> void:
 	if capacity > 0:
 		_assign_homes_to_fill_capacity()
 	else:
-		# no homes; clear home flags
 		for p: PersonState in _people:
 			p.has_home = false
 			p.home_cell = Vector2i(999999, 999999)
 
 func _capacity_people() -> int:
-	# office = 3, apartment = 2
 	var offices_count: int = int(build.offices.size())
 	var apartments_count: int = int(build.apartments.size())
 	return offices_count * 3 + apartments_count * 2
@@ -126,13 +115,13 @@ func _assign_homes_to_fill_capacity() -> void:
 	var slots: Array[Vector2i] = []
 
 	# offices: 3 each
-	for key in build.offices:
-		var c: Vector2i = key
+	for key in build.offices.keys():
+		var c: Vector2i = key as Vector2i
 		slots.append(c); slots.append(c); slots.append(c)
 
 	# apartments: 2 each
-	for key2 in build.apartments:
-		var c2: Vector2i = key2
+	for key2 in build.apartments.keys():
+		var c2: Vector2i = key2 as Vector2i
 		slots.append(c2); slots.append(c2)
 
 	slots.shuffle()
@@ -150,7 +139,7 @@ func _assign_homes_to_fill_capacity() -> void:
 			p.home_cell = Vector2i(999999, 999999)
 
 func _spawn_person() -> void:
-	var p := PersonState.new()
+	var p: PersonState = PersonState.new()
 	p.id = _next_id
 	_next_id += 1
 
@@ -159,23 +148,23 @@ func _spawn_person() -> void:
 	p.pos = _cell_center(spawn)
 
 	p.has_home = false
+	p.home_cell = Vector2i(999999, 999999)
 	p.goal = _pick_random_goal_cell(spawn)
 	_repath(p)
 
 	_people.append(p)
 
 func _has_any_base() -> bool:
-	# Base exists if ANY walkable tile at y=0: floor OR mezz
-	for key in build.floors:
-		var c: Vector2i = key
+	for key in build.floors.keys():
+		var c: Vector2i = key as Vector2i
 		if c.y == 0:
 			return true
-	for key2 in build.mezz2_cells:
-		var c2: Vector2i = key2
+	for key2 in build.mezz2_cells.keys():
+		var c2: Vector2i = key2 as Vector2i
 		if c2.y == 0:
 			return true
-	for key3 in build.mezz3_cells:
-		var c3: Vector2i = key3
+	for key3 in build.mezz3_cells.keys():
+		var c3: Vector2i = key3 as Vector2i
 		if c3.y == 0:
 			return true
 	return false
@@ -185,6 +174,45 @@ func _emit_count_if_changed() -> void:
 	if now != _last_count:
 		_last_count = now
 		emit_signal("count_changed", now)
+
+# --------------------------------------------------------------------
+# IMPORTANT FIX:
+# If a person becomes invalid (floor removed under them, out of bounds, etc):
+# - visitors: despawn
+# - home people: respawn to a valid base tile
+# This removes the “one person outside forever” bug.
+# --------------------------------------------------------------------
+
+func _sanitize_people() -> void:
+	# Walk backwards if we remove entries
+	for i in range(_people.size() - 1, -1, -1):
+		var p: PersonState = _people[i]
+
+		var bad_cell: bool = (not build.in_bounds(p.cell)) or (not _is_walkable(p.cell))
+
+		if bad_cell:
+			if p.has_home:
+				# Respawn “resident” onto valid base
+				var sp: Vector2i = _pick_spawn_cell()
+				p.cell = sp
+				p.pos = _cell_center(sp)
+				p.path.clear()
+				p.path_index = 0
+				p.goal = p.home_cell
+				_repath(p)
+			else:
+				# Visitors just leave
+				_people.remove_at(i)
+				continue
+
+		# If goal/home becomes invalid, reset it
+		if p.has_home and ((not build.in_bounds(p.home_cell)) or (not _is_walkable(p.home_cell))):
+			p.has_home = false
+			p.home_cell = Vector2i(999999, 999999)
+
+		if (not build.in_bounds(p.goal)) or (not _is_walkable(p.goal)):
+			p.goal = p.home_cell if p.has_home else _pick_random_goal_cell(p.cell)
+			_repath(p)
 
 # --------------------------------------------------------------------
 # Movement/pathing
@@ -199,7 +227,7 @@ func _tick_person(p: PersonState, delta: float) -> void:
 		p.wait -= delta
 		return
 
-	# if homebound and already at home, stay
+	# homebound and already home => stay
 	if p.has_home and p.cell == p.home_cell:
 		p.path.clear()
 		p.path_index = 0
@@ -210,6 +238,7 @@ func _tick_person(p: PersonState, delta: float) -> void:
 		p.goal = p.home_cell if p.has_home else _pick_random_goal_cell(p.cell)
 		_repath(p)
 
+	# still no path => wait, try later
 	if p.path.is_empty():
 		p.wait = 0.8
 		return
@@ -237,12 +266,13 @@ func _cell_center(c: Vector2i) -> Vector2:
 	return Vector2((float(c.x) + 0.5) * cs, (float(c.y) + 0.5) * cs)
 
 func _pick_spawn_cell() -> Vector2i:
+	# Prefer x=0, but fall back to any base walkable at y=0
 	var try0 := Vector2i(0, 0)
 	if build.in_bounds(try0) and _is_walkable(try0):
 		return try0
 
 	var half_w: int = int(host.WORLD_WIDTH) >> 1
-	for _i in range(64):
+	for _i in range(128):
 		var x: int = randi_range(-half_w, half_w - 1)
 		var c := Vector2i(x, 0)
 		if build.in_bounds(c) and _is_walkable(c):
@@ -251,18 +281,20 @@ func _pick_spawn_cell() -> Vector2i:
 	return Vector2i(0, 0)
 
 func _pick_random_goal_cell(from_cell: Vector2i) -> Vector2i:
-	# sometimes go to tenants
+	# Prefer tenants sometimes
 	if int(build.offices.size()) + int(build.apartments.size()) > 0 and randf() < 0.6:
-		# pick any office
-		for key in build.offices:
-			return key
-		# else any apartment
-		for key2 in build.apartments:
-			return key2
+		for key in build.offices.keys():
+			var c: Vector2i = key as Vector2i
+			if _is_walkable(c):
+				return c
+		for key2 in build.apartments.keys():
+			var c2: Vector2i = key2 as Vector2i
+			if _is_walkable(c2):
+				return c2
 
-	# otherwise roam on base row
+	# Otherwise roam on base row
 	var half_w: int = int(host.WORLD_WIDTH) >> 1
-	for _i in range(64):
+	for _i in range(128):
 		var x: int = randi_range(-half_w, half_w - 1)
 		var c := Vector2i(x, 0)
 		if build.in_bounds(c) and _is_walkable(c):
@@ -271,7 +303,7 @@ func _pick_random_goal_cell(from_cell: Vector2i) -> Vector2i:
 	return from_cell
 
 # --------------------------------------------------------------------
-# Walkable rules + step rules (prevents “floating”)
+# Walkable rules + step rules
 # Mezz2: platform at y=0 and y=1
 # Mezz3: platform at y=0 and y=2
 # Vertical movement ONLY via elevator/stairs/escalators
@@ -288,7 +320,7 @@ func _is_walkable(c: Vector2i) -> bool:
 	if build.offices.has(c) or build.apartments.has(c):
 		return true
 
-	# vertical tiles are walkable positions
+	# vertical tiles
 	if build.stairs.has(c):
 		return true
 	if build.escalators_up.has(c):
@@ -296,7 +328,7 @@ func _is_walkable(c: Vector2i) -> bool:
 	if build.escalators_down.has(c):
 		return true
 
-	# elevator walkable only if column has base at y=0
+	# elevator only if column has base
 	if build.elevators.has(c) and _column_has_base(c.x):
 		return true
 
@@ -314,23 +346,23 @@ func _can_step(a: Vector2i, b: Vector2i) -> bool:
 	if not _is_walkable(b):
 		return false
 
-	# horizontal step
+	# horizontal
 	if a.y == b.y and abs(a.x - b.x) == 1:
 		return _is_walkable(a)
 
-	# vertical step (ONLY via proper verticals)
+	# vertical only via valid verticals
 	if a.x == b.x and abs(a.y - b.y) == 1:
 		var dy: int = b.y - a.y
 
-		# elevator requires both cells in shaft + base
+		# elevator: both cells in shaft + base
 		if build.elevators.has(a) and build.elevators.has(b) and _column_has_base(a.x):
 			return true
 
-		# stairs requires both cells
+		# stairs: both cells are stairs
 		if build.stairs.has(a) and build.stairs.has(b):
 			return true
 
-		# escalators are directional from the “from” cell
+		# escalators: directional from “from” cell
 		if dy == 1 and build.escalators_up.has(a):
 			return true
 		if dy == -1 and build.escalators_down.has(a):
@@ -392,9 +424,3 @@ func _reconstruct_path(came: Dictionary, start: Vector2i, goal: Vector2i) -> Arr
 
 	path.push_front(start)
 	return path
-
-func _on_build_changed() -> void:
-	_reconcile_population(false)
-	_emit_count_if_changed()
-	if layer != null:
-		layer.queue_redraw()
