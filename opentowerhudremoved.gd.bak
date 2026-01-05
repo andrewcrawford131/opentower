@@ -67,11 +67,6 @@ var _drag_b_cell: Vector2i = Vector2i.ZERO
 @export var MINIMAP_VIEWBOX_COLOR: Color = Color(1, 1, 1, 1)
 @export var MINIMAP_HOME_TEXT: String = "Home"
 
-# This scales ONLY the minimap camera fit.
-# 1.0 = exact fit, <1.0 zooms OUT a bit, >1.0 zooms IN a bit.
-@export var MINIMAP_ZOOM_MULT: float = 1.0
-@export var MINIMAP_DEBUG: bool = false
-
 # ---- Camera pan/zoom config ----
 @export var PAN_SPEED: float = 800.0
 @export var ZOOM_STEP: float = 0.1
@@ -167,7 +162,7 @@ func _ready() -> void:
 	_grid_layer.connect("draw", Callable(_renderer, "draw_grid"))
 	_build_layer.connect("draw", Callable(_renderer, "draw_build"))
 
-	# Minimap (beta-world working version)
+	# Minimap, HUD, etc...
 	_minimap = MinimapControllerScript.new()
 	add_child(_minimap)
 	_minimap.setup(self, _build, {
@@ -180,7 +175,6 @@ func _ready() -> void:
 		"viewbox_border": MINIMAP_VIEWBOX_BORDER,
 		"viewbox_color": MINIMAP_VIEWBOX_COLOR,
 		"home_text": MINIMAP_HOME_TEXT,
-		"zoom_mult": MINIMAP_ZOOM_MULT,
 	})
 
 	get_window().connect("size_changed", Callable(self, "_on_screen_resized"))
@@ -274,7 +268,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					_build_layer.queue_redraw()
 		# Pan while dragging
 		if _is_dragging:
-			_camera.position -= Vector2(mm.relative.x, -mm.relative.y)
+			_camera.position -= mm.relative
 			_clamp_camera_to_world()
 			if is_instance_valid(_minimap):
 				_minimap.update_viewbox()
@@ -285,16 +279,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Start/stop drag panning
 		if PAN_MOUSE_BUTTONS.has(mb.button_index):
 			_is_dragging = mb.pressed
-
 		# Wheel zoom
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_zoom_by(1.0 + ZOOM_STEP)  # zoom IN
+			_zoom_by(1.0 - ZOOM_STEP)  # zoom in
 			return
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_zoom_by(1.0 - ZOOM_STEP)  # zoom OUT
+			_zoom_by(1.0 + ZOOM_STEP)  # zoom out
 			return
-
-		# Build drag (LMB)
+		# Build on LMB
+				# Build drag (LMB) - replaces DragOverlay class
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
 				_drag_building = true
@@ -306,7 +299,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _drag_building:
 					_drag_building = false
 					var rect := _drag_rect_from(_drag_a_cell, _drag_b_cell)
-					_drag_place_rect(rect)
+					_drag_place_rect(rect) # places via _attempt_build()
 					if is_instance_valid(_build_layer):
 						_build_layer.queue_redraw()
 			return
@@ -346,7 +339,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _camera_half_view() -> Vector2:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	return Vector2(vp.x / _camera.zoom.x, vp.y / _camera.zoom.y) * 0.5
+	return Vector2(vp.x * _camera.zoom.x, vp.y * _camera.zoom.y) * 0.5
 
 func _clamp_camera_to_world() -> void:
 	var half: Vector2 = _camera_half_view()
@@ -358,10 +351,10 @@ func _clamp_camera_to_world() -> void:
 		pos.x = clamp(pos.x, left, right)
 
 	# Y is inverted because the world Node2D has scale.y = -1.
-	var top_g: float = -_world_top_px()
-	var bottom_g: float = -_world_bottom_px()
-	var min_y: float = top_g + half.y
-	var max_y: float = bottom_g - half.y
+	var top_g: float = -_world_top_px()      # local +Y (up) becomes global negative
+	var bottom_g: float = -_world_bottom_px() # local -Y (down) becomes global positive
+	var min_y: float = top_g + half.y        # camera cannot go above this
+	var max_y: float = bottom_g - half.y     # camera cannot go below this
 
 	if min_y <= max_y:
 		pos.y = clamp(pos.y, min_y, max_y)
@@ -440,6 +433,7 @@ func _show_toast(msg: String) -> void:
 		print(msg)
 
 func _world_to_cell(local: Vector2) -> Vector2i:
+	# Round to nearest column/level centered on grid lines.
 	var cx: int = int(floor(local.x / float(CELL_SIZE)))
 	var cy: int = int(floor(local.y / float(CELL_SIZE)))
 	return Vector2i(cx, cy)

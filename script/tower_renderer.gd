@@ -79,19 +79,46 @@ func draw_build() -> void:
 	for key in mezz3.keys():
 		_draw_cell(build_layer, key, host.MEZZ3_COLOR)
 
-	# Hover + drag preview still live on host (easy to move later)
+	# Hover preview
 	var hc: Vector2i = host._hover_cell
-	if host._in_bounds(hc):
-		var col: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
-		var r := Rect2(Vector2(hc.x * host.CELL_SIZE, hc.y * host.CELL_SIZE), Vector2(host.CELL_SIZE, host.CELL_SIZE))
-		build_layer.draw_rect(r, col, true)
+	if build.in_bounds(hc):
+		var span := 1
+		var did_draw := false
 
-	if host._drag_building:
-		var rect: Rect2i = host._drag_rect_from(host._drag_a_cell, host._drag_b_cell)
-		var rp := Vector2(rect.position.x * host.CELL_SIZE, rect.position.y * host.CELL_SIZE)
-		var rs := Vector2(rect.size.x * host.CELL_SIZE, rect.size.y * host.CELL_SIZE)
-		build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.12), true)
-		build_layer.draw_rect(Rect2(rp, rs), Color(1, 1, 0, 0.8), false)
+		match build.tool:
+			TowerBuild.BuildTool.DEMOLISH:
+				var cells: Array[Vector2i] = build.demolish_target_cells(hc)
+				var col: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
+				for c in cells:
+					if build.in_bounds(c):
+						var r := Rect2(
+							Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+							Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+						)
+						build_layer.draw_rect(r, col, true)
+				did_draw = true
+
+			TowerBuild.BuildTool.MEZZ2:
+				span = 2
+			TowerBuild.BuildTool.MEZZ3:
+				span = 3
+			TowerBuild.BuildTool.ELEVATOR, TowerBuild.BuildTool.STAIRS, TowerBuild.BuildTool.ESCALATOR_UP:
+				span = build.mezz_span_height(hc)
+			TowerBuild.BuildTool.ESCALATOR_DOWN:
+				span = 1
+			_:
+				span = 1
+
+		if not did_draw:
+			var col2: Color = host.HOVER_OK_COLOR if host._hover_valid else host.HOVER_BAD_COLOR
+			for i in range(span):
+				var c := Vector2i(hc.x, hc.y + i)
+				if build.in_bounds(c):
+					var r2 := Rect2(
+						Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+						Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+					)
+					build_layer.draw_rect(r2, col2, true)
 
 func _draw_cell(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
 	var tl := Vector2(cell.x * host.CELL_SIZE, cell.y * host.CELL_SIZE)

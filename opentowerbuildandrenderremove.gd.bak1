@@ -14,8 +14,6 @@ const TowerRendererScript := preload("res://script/tower_renderer.gd")
 var _renderer: TowerRenderer
 const TowerBuildScript := preload("res://script/tower_build.gd")
 var _build: TowerBuild
-const TowerHudScript := preload("res://script/tower_hud.gd")
-var _hud: TowerHud
 
 # ---- Colors ----
 @export var SKY_COLOR: Color = Color(0.55, 0.75, 1.0, 1.0)
@@ -27,6 +25,7 @@ var _hud: TowerHud
 @export var FLOOR_DOWN_COLOR: Color = Color(0.55, 0.60, 0.70, 1.0)
 @export var ELEVATOR_COLOR: Color = Color(0.95, 0.80, 0.25, 1.0)
 @export var STAIRS_COLOR: Color = Color(0.35, 0.85, 0.45, 1.0)
+@export var ESCALATOR_COLOR: Color = Color(0.90, 0.55, 0.25, 1.0)
 @export var HOVER_OK_COLOR: Color = Color(0.25, 1.0, 0.35, 0.40)
 @export var HOVER_BAD_COLOR: Color = Color(1.00, 0.25, 0.25, 0.40)
 @export var ESCALATOR_UP_COLOR: Color = Color(0.20, 0.65, 1.00, 1.0)
@@ -35,6 +34,9 @@ const MEZZ2_COLOR: Color = Color(0.20, 0.70, 1.00, 0.70)  # bright cyan, semi-op
 const MEZZ3_COLOR: Color = Color(0.60, 0.35, 1.00, 0.70)  # violet, semi-opaque
 @export var OFFICE_COLOR: Color = Color(0.20, 0.70, 0.90, 1.0)
 @export var APARTMENT_COLOR: Color = Color(0.50, 0.90, 0.50, 1.0)
+
+func _get_cell_size() -> int:
+	return CELL_SIZE
 
 # ---- Internal nodes ----
 var _camera: Camera2D
@@ -67,11 +69,6 @@ var _drag_b_cell: Vector2i = Vector2i.ZERO
 @export var MINIMAP_VIEWBOX_COLOR: Color = Color(1, 1, 1, 1)
 @export var MINIMAP_HOME_TEXT: String = "Home"
 
-# This scales ONLY the minimap camera fit.
-# 1.0 = exact fit, <1.0 zooms OUT a bit, >1.0 zooms IN a bit.
-@export var MINIMAP_ZOOM_MULT: float = 1.0
-@export var MINIMAP_DEBUG: bool = false
-
 # ---- Camera pan/zoom config ----
 @export var PAN_SPEED: float = 800.0
 @export var ZOOM_STEP: float = 0.1
@@ -81,6 +78,12 @@ var _drag_b_cell: Vector2i = Vector2i.ZERO
 # --- Save slots ---
 const SAVE_SLOTS := ["user://slot1.json", "user://slot2.json", "user://slot3.json"]
 var _save_slot: int = 0
+
+# --- HUD refs ---
+var _hud_layer: CanvasLayer = null
+var _toolbar_panel: Control = null
+var _hud_tool_chip: Label = null
+var _hud_hint_label: Label = null
 
 # ---- Camera pan config ----
 const PAN_MOUSE_BUTTONS: Dictionary = {MOUSE_BUTTON_RIGHT: true}
@@ -147,17 +150,6 @@ func _ready() -> void:
 	_build.setup(self)
 	_build.changed.connect(Callable(self, "_on_build_changed"))
 
-	_hud = TowerHudScript.new()
-	add_child(_hud)
-	_hud.setup(self, _build, {"save_slots": SAVE_SLOTS, "start_slot": _save_slot})
-
-	_hud.tool_changed.connect(Callable(self, "_on_hud_tool_changed"))
-	_hud.slot_changed.connect(Callable(self, "_on_hud_slot_changed"))
-	_hud.save_requested.connect(Callable(self, "_on_hud_save_requested"))
-	_hud.load_requested.connect(Callable(self, "_on_hud_load_requested"))
-
-	_hud.set_slot_timestamp(_slot_timestamp(_save_slot))
-
 	# NOW create + hook renderer (after layers exist)
 	_renderer = TowerRendererScript.new()
 	add_child(_renderer)
@@ -167,7 +159,7 @@ func _ready() -> void:
 	_grid_layer.connect("draw", Callable(_renderer, "draw_grid"))
 	_build_layer.connect("draw", Callable(_renderer, "draw_build"))
 
-	# Minimap (beta-world working version)
+	# Minimap, HUD, etc...
 	_minimap = MinimapControllerScript.new()
 	add_child(_minimap)
 	_minimap.setup(self, _build, {
@@ -180,47 +172,20 @@ func _ready() -> void:
 		"viewbox_border": MINIMAP_VIEWBOX_BORDER,
 		"viewbox_color": MINIMAP_VIEWBOX_COLOR,
 		"home_text": MINIMAP_HOME_TEXT,
-		"zoom_mult": MINIMAP_ZOOM_MULT,
 	})
 
 	get_window().connect("size_changed", Callable(self, "_on_screen_resized"))
-
-	_setup_autosave()
+	_init_building()
 
 	_bg_layer.queue_redraw()
 	_build_layer.queue_redraw()
 	_grid_layer.queue_redraw()
 
-func _on_hud_tool_changed(_t: int) -> void:
-	_hover_valid = _build.can_build(_build.tool, _hover_cell)
-	if is_instance_valid(_build_layer):
-		_build_layer.queue_redraw()
-	if is_instance_valid(_hud):
-		_hud.update_hover(_hover_cell, _hover_valid)
-
-func _on_hud_slot_changed(slot: int) -> void:
-	_save_slot = slot
-	if is_instance_valid(_hud):
-		_hud.set_slot_timestamp(_slot_timestamp(_save_slot))
-		_hud.toast("Slot " + str(_save_slot + 1))
-
-func _on_hud_save_requested(slot: int) -> void:
-	_save_slot = slot
-	save_game(_save_slot)
-	if is_instance_valid(_hud):
-		_hud.set_slot_timestamp(_slot_timestamp(_save_slot))
-
-func _on_hud_load_requested(slot: int) -> void:
-	_save_slot = slot
-	load_game(_save_slot)
-	if is_instance_valid(_hud):
-		_hud.set_slot_timestamp(_slot_timestamp(_save_slot))
-
 func _on_screen_resized() -> void:
-	if is_instance_valid(_hud):
-		_hud.relayout()
-	if is_instance_valid(_minimap):
-		_minimap.update_viewbox()
+	# …your existing resize logic…
+	if is_instance_valid(_hud_layer):
+		# pass the same toolbar panel you created in _init_building()
+		_layout_hud_helpers(_toolbar_panel)
 
 func _process(delta: float) -> void:
 	var move: Vector2 = Vector2.ZERO
@@ -237,6 +202,15 @@ func _process(delta: float) -> void:
 		_clamp_camera_to_world()
 		if is_instance_valid(_minimap):
 			_minimap.update_viewbox()
+
+	_update_hover_hint()
+
+func _drag_get_mouse_cell() -> Vector2i:
+	if has_method("_mouse_to_cell"):
+		return call("_mouse_to_cell")
+	var p: Vector2 = get_global_mouse_position()
+	var cs: int = _get_cell_size()
+	return Vector2i(floori(p.x / cs), floori(p.y / cs))
 
 func _drag_rect_from(a: Vector2i, b: Vector2i) -> Rect2i:
 	var x0 := mini(a.x, b.x)
@@ -262,19 +236,17 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		var mm: InputEventMouseMotion = event as InputEventMouseMotion
 		# Update hover preview first
-		if is_instance_valid(_world):
+		if is_instance_valid(_world) and has_method("_world_to_cell"):
 			var local: Vector2 = _world.to_local(get_global_mouse_position())
 			_hover_cell = _world_to_cell(local)
 			_hover_valid = _build.can_build(_build.tool, _hover_cell)
-			if is_instance_valid(_hud):
-				_hud.update_hover(_hover_cell, _hover_valid)
 			if _drag_building:
 				_drag_b_cell = _mouse_to_cell()
 				if is_instance_valid(_build_layer):
 					_build_layer.queue_redraw()
 		# Pan while dragging
 		if _is_dragging:
-			_camera.position -= Vector2(mm.relative.x, -mm.relative.y)
+			_camera.position -= mm.relative
 			_clamp_camera_to_world()
 			if is_instance_valid(_minimap):
 				_minimap.update_viewbox()
@@ -285,16 +257,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Start/stop drag panning
 		if PAN_MOUSE_BUTTONS.has(mb.button_index):
 			_is_dragging = mb.pressed
-
 		# Wheel zoom
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_zoom_by(1.0 + ZOOM_STEP)  # zoom IN
+			_zoom_by(1.0 - ZOOM_STEP)  # zoom in
 			return
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_zoom_by(1.0 - ZOOM_STEP)  # zoom OUT
+			_zoom_by(1.0 + ZOOM_STEP)  # zoom out
 			return
-
-		# Build drag (LMB)
+		# Build on LMB
+				# Build drag (LMB) - replaces DragOverlay class
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
 				_drag_building = true
@@ -306,7 +277,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _drag_building:
 					_drag_building = false
 					var rect := _drag_rect_from(_drag_a_cell, _drag_b_cell)
-					_drag_place_rect(rect)
+					_drag_place_rect(rect) # places via _attempt_build()
 					if is_instance_valid(_build_layer):
 						_build_layer.queue_redraw()
 			return
@@ -334,19 +305,25 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var ctrl: bool = event.ctrl_pressed
 		if ctrl and event.keycode == KEY_S:
-			_on_hud_save_requested(_save_slot)
+			var _ok: bool = save_game(_save_slot)
 		elif ctrl and event.keycode == KEY_L:
-			_on_hud_load_requested(_save_slot)
+			var _ok2: bool = load_game(_save_slot)
 		elif event.keycode == KEY_1:
-			_on_hud_slot_changed(0)
+			_save_slot = 0
+			_update_slot_info()
+			_show_toast("Slot 1")
 		elif event.keycode == KEY_2:
-			_on_hud_slot_changed(1)
+			_save_slot = 1
+			_update_slot_info()
+			_show_toast("Slot 2")
 		elif event.keycode == KEY_3:
-			_on_hud_slot_changed(2)
+			_save_slot = 2
+			_update_slot_info()
+			_show_toast("Slot 3")
 
 func _camera_half_view() -> Vector2:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	return Vector2(vp.x / _camera.zoom.x, vp.y / _camera.zoom.y) * 0.5
+	return Vector2(vp.x * _camera.zoom.x, vp.y * _camera.zoom.y) * 0.5
 
 func _clamp_camera_to_world() -> void:
 	var half: Vector2 = _camera_half_view()
@@ -358,10 +335,10 @@ func _clamp_camera_to_world() -> void:
 		pos.x = clamp(pos.x, left, right)
 
 	# Y is inverted because the world Node2D has scale.y = -1.
-	var top_g: float = -_world_top_px()
-	var bottom_g: float = -_world_bottom_px()
-	var min_y: float = top_g + half.y
-	var max_y: float = bottom_g - half.y
+	var top_g: float = -_world_top_px()      # local +Y (up) becomes global negative
+	var bottom_g: float = -_world_bottom_px() # local -Y (down) becomes global positive
+	var min_y: float = top_g + half.y        # camera cannot go above this
+	var max_y: float = bottom_g - half.y     # camera cannot go below this
 
 	if min_y <= max_y:
 		pos.y = clamp(pos.y, min_y, max_y)
@@ -386,6 +363,107 @@ func _notification(what: int) -> void:
 		if is_instance_valid(_grid_layer):
 			_grid_layer.queue_redraw()
 
+func _init_building() -> void:
+	# HUD: top toolbar
+	_hud_layer = CanvasLayer.new()
+	add_child(_hud_layer)
+
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.5)
+	sb.border_width_top = 1
+	sb.border_width_bottom = 1
+	sb.border_width_left = 1
+	sb.border_width_right = 1
+	sb.border_color = Color(1, 1, 1, 0.25)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.position = Vector2(12, 8)
+	_hud_layer.add_child(panel)
+	_toolbar_panel = panel
+
+	var row := HBoxContainer.new()
+
+	row.add_theme_constant_override("separation", 6)
+	panel.add_child(row)
+	_hud_add_btn(row, "Floors", Callable(self, "_on_tool_floors"))
+	# New: Mezz menu (dropdown: Mezz 2 / Mezz 3)
+	var mezz_btn := MenuButton.new()
+	mezz_btn.text = "Mezz"
+	mezz_btn.focus_mode = Control.FOCUS_NONE
+	row.add_child(mezz_btn)
+	var mezz_menu := mezz_btn.get_popup()
+	mezz_menu.clear()
+	mezz_menu.add_item("Mezz 2", 2)
+	mezz_menu.add_item("Mezz 3", 3)
+	if not mezz_menu.is_connected("id_pressed", Callable(self, "_on_mezz_menu_id_pressed")):
+		mezz_menu.connect("id_pressed", Callable(self, "_on_mezz_menu_id_pressed"))
+	_hud_add_btn(row, "Elevator", Callable(self, "_on_tool_elevator"))
+	_hud_add_btn(row, "Stairs", Callable(self, "_on_tool_stairs"))
+	_hud_add_btn(row, "Esc Up", Callable(self, "_on_tool_escalator_up"))
+	_hud_add_btn(row, "Esc Down", Callable(self, "_on_tool_escalator_down"))
+
+	# Tenants
+	_hud_add_btn(row, "Office", Callable(self, "_on_tool_office"))
+	_hud_add_btn(row, "Apartment", Callable(self, "_on_tool_apartment"))
+
+	_hud_add_btn(row, "Demolish", Callable(self, "_on_tool_demolish"))
+
+	_nudge_tools_row(row)
+	_build_save_hud()
+	_setup_autosave()
+	_update_slot_info()
+
+	_build.tool = TowerBuild.BuildTool.FLOORS
+	
+	_ensure_hint_bar()
+
+	var msg: String = _build.why_blocked(_build.tool, _hover_cell)
+	_hover_hint_label.text = msg
+	_hover_hint_label.visible = msg != ""
+
+	# Tiny status chip with the current tool
+	_hud_tool_chip = Label.new()
+	_hud_tool_chip.add_theme_color_override("font_color", Color(0.85, 1.0, 1.0, 1.0))
+	_hud_tool_chip.add_theme_font_size_override("font_size", 14)
+	_hud_layer.add_child(_hud_tool_chip)
+
+	await get_tree().process_frame  # ensure panel has size before positioning
+	var panel_pos := panel.position
+	var panel_size := panel.size
+	# Chip to the right of the toolbar; hint just below the toolbar
+	if is_instance_valid(_hud_tool_chip):
+		_hud_tool_chip.position = Vector2(panel_pos.x + panel_size.x + 12.0, panel_pos.y + 2.0)
+
+	if is_instance_valid(_hud_hint_label):
+		_hud_hint_label.position = Vector2(panel_pos.x, panel_pos.y + panel_size.y + 8.0)
+
+	_update_tool_chip()
+	await get_tree().process_frame
+	_layout_hud_helpers(_toolbar_panel)
+
+func _on_save() -> void:
+	save_game(_save_slot)
+
+func _on_load() -> void:
+	load_game(_save_slot)
+
+func _on_slot_1() -> void:
+	_save_slot = 0
+	_show_toast("Slot 1")
+
+func _on_slot_2() -> void:
+	_save_slot = 1
+	_show_toast("Slot 2")
+
+func _on_slot_3() -> void:
+	_save_slot = 2
+	_show_toast("Slot 3")
+
+func _on_slot_changed(index: int) -> void:
+	_save_slot = clamp(index, 0, SAVE_SLOTS.size() - 1)
+	_update_slot_info()
+	_show_toast("Slot " + str(_save_slot + 1))
+
 func _slot_timestamp(slot: int) -> String:
 	var path: String = SAVE_SLOTS[clamp(slot, 0, SAVE_SLOTS.size() - 1)]
 	if not FileAccess.file_exists(path):
@@ -405,6 +483,57 @@ func _slot_timestamp(slot: int) -> String:
 		return "No time"
 	var ts := int(data.meta.timestamp)
 	return Time.get_datetime_string_from_unix_time(ts, true)
+
+func _update_slot_info() -> void:
+	var tools_parent: Control = _get_tools_parent()
+	if tools_parent == null:
+		return
+	var row_save := tools_parent.get_child(0)
+	if not (row_save is HBoxContainer):
+		return
+	var slot_info := row_save.get_node_or_null("SlotInfo")
+	if slot_info == null:
+		return
+	var ts := _slot_timestamp(_save_slot)
+	slot_info.text = "(" + ts + ")"
+
+func _get_tools_parent() -> Control:
+	# Row container lives under the toolbar panel created in _init_building.
+	return _toolbar_panel
+
+func _ensure_hint_bar() -> void:
+	if _hover_hint_label != null:
+		return
+	_hint_layer = CanvasLayer.new()
+	_hint_layer.layer = 50
+	add_child(_hint_layer)
+
+	_hint_panel = PanelContainer.new()
+	_hint_panel.name = "HintBar"
+	_hint_panel.set_anchors_preset(Control.PRESET_TOP_LEFT, true)
+	_hint_panel.position = Vector2(32, 108)
+
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1, 1, 0, 0.85)
+	sb.corner_radius_top_left = 6
+	sb.corner_radius_top_right = 6
+	sb.corner_radius_bottom_left = 6
+	sb.corner_radius_bottom_right = 6
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 6
+	sb.content_margin_bottom = 6
+	_hint_panel.add_theme_stylebox_override("panel", sb)
+	_hint_layer.add_child(_hint_panel)
+
+	_hover_hint_label = Label.new()
+	_hover_hint_label.text = ""
+	_hover_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_hover_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_hover_hint_label.add_theme_color_override("font_color", Color(0, 0, 0))
+	_hover_hint_label.add_theme_font_size_override("font_size", 20)
+	_hint_panel.add_child(_hover_hint_label)
+	_hud_hint_label = _hover_hint_label
 
 var _autosave_timer: Timer = null
 var AUTOSAVE_SECONDS: float = 60.0
@@ -433,13 +562,181 @@ func _on_about_to_quit() -> void:
 func _on_main_close() -> void:
 	save_game(_save_slot)
 
+func _nudge_tools_row(row: HBoxContainer) -> void:
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(32, 1)
+	row.add_child(spacer)
+	row.move_child(spacer, 0)
+	
+var _save_hud_layer: CanvasLayer = null
+var _save_row: HBoxContainer = null
+
+func _build_save_hud() -> void:
+	if _save_hud_layer != null:
+		_position_save_hud()
+		return
+
+	_save_hud_layer = CanvasLayer.new()
+	_save_hud_layer.layer = 10
+	add_child(_save_hud_layer)
+
+	_save_row = HBoxContainer.new()
+	_save_row.add_theme_constant_override("separation", 8)
+	_save_hud_layer.add_child(_save_row)
+
+	var lbl_save: Label = Label.new()
+	lbl_save.text = "Save & Load"
+	_save_row.add_child(lbl_save)
+
+	var slot_dd: OptionButton = OptionButton.new()
+	slot_dd.add_item("Slot 1", 0)
+	slot_dd.add_item("Slot 2", 1)
+	slot_dd.add_item("Slot 3", 2)
+	slot_dd.selected = _save_slot
+	slot_dd.item_selected.connect(Callable(self, "_on_slot_changed"))
+	_save_row.add_child(slot_dd)
+
+	var slot_info: Label = Label.new()
+	slot_info.name = "SlotInfo"
+	slot_info.text = ""
+	_save_row.add_child(slot_info)
+
+	_hud_add_btn(_save_row, "Save", Callable(self, "_on_save"))
+	_hud_add_btn(_save_row, "Load", Callable(self, "_on_load"))
+
+	get_tree().root.size_changed.connect(_position_save_hud)
+	call_deferred("_position_save_hud")
+
+func _position_save_hud() -> void:
+	if _save_row == null:
+		return
+	var vp: Vector2i = get_viewport().get_visible_rect().size
+	var size: Vector2 = _save_row.get_minimum_size()
+	var pos := Vector2(float(vp.x) - size.x - 16.0, float(vp.y) - size.y - 16.0)
+	_save_row.position = pos
+
+func _layout_hud_helpers(toolbar: Control) -> void:
+	if not is_instance_valid(toolbar) or not is_instance_valid(_hud_hint_label):
+		return
+	await get_tree().process_frame  # ensure sizes are valid
+
+	var pos := toolbar.position
+	var size := toolbar.size
+	_hud_hint_label.position = Vector2(pos.x, pos.y + size.y + 8.0)
+
+	_update_hover_hint()
+
+func _on_tool_floors() -> void:
+	_build.tool = TowerBuild.BuildTool.FLOORS
+	_update_tool_chip()
+
+func _update_hover_hint() -> void:
+	_ensure_hint_bar()
+	var msg: String = ""
+	if _build.in_bounds(_hover_cell) and not _hover_valid:
+		msg = _build.why_blocked(_build.tool, _hover_cell)
+	_hover_hint_label.text = msg
+	_hover_hint_label.visible = msg != ""
+
+func _on_mezz_menu_id_pressed(id: int) -> void:
+	if id == 2:
+		_build.tool = TowerBuild.BuildTool.MEZZ2
+	elif id == 3:
+		_build.tool = TowerBuild.BuildTool.MEZZ3
+	_update_tool_chip()
+
+func _on_tool_stairs() -> void:
+	_build.tool = TowerBuild.BuildTool.STAIRS
+	_update_tool_chip()
+	
+func _on_tool_escalator_up() -> void:
+	_build.tool = TowerBuild.BuildTool.ESCALATOR_UP
+	_update_tool_chip()
+
+func _on_tool_escalator_down() -> void:
+	_build.tool = TowerBuild.BuildTool.ESCALATOR_DOWN
+	_update_tool_chip()
+
+func _on_tool_elevator() -> void:
+	_build.tool = TowerBuild.BuildTool.ELEVATOR
+	_update_tool_chip()
+
+func _on_tool_office() -> void:
+	_build.tool = TowerBuild.BuildTool.OFFICE
+	_update_tool_chip()
+
+func _on_tool_apartment() -> void:
+	_build.tool = TowerBuild.BuildTool.APARTMENT
+	_update_tool_chip()
+
+func _on_tool_demolish() -> void:
+	_build.tool = TowerBuild.BuildTool.DEMOLISH
+	_update_tool_chip()
+
+var _toast_label: Label = null
+var _toast_timer: Timer = null
+var _hint_layer: CanvasLayer = null
+var _hint_panel: PanelContainer = null
+var _hover_hint_label: Label = null
+
+func _ensure_toast_nodes() -> void:
+	if _toast_label != null and _toast_timer != null:
+		return
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	_toast_label = Label.new()
+	_toast_label.visible = false
+	_toast_label.text = ""
+	_toast_label.anchor_left = 0.5
+	_toast_label.anchor_top = 1.0
+	_toast_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	_toast_label.position = Vector2(0, -24)
+
+	layer.add_child(_toast_label)
+	_toast_timer = Timer.new()
+	_toast_timer.one_shot = true
+	_toast_timer.wait_time = 1.5
+	layer.add_child(_toast_timer)
+	_toast_timer.timeout.connect(Callable(self, "_on_toast_timeout"))
+
 func _show_toast(msg: String) -> void:
-	if is_instance_valid(_hud):
-		_hud.toast(msg)
-	else:
-		print(msg)
+	_ensure_toast_nodes()
+	_toast_label.text = msg
+	_toast_label.visible = true
+	_toast_timer.start()
+
+func _update_tool_chip() -> void:
+	if not is_instance_valid(_hud_tool_chip):
+		return
+
+	var tool_label := ""
+	match _build.tool:
+		TowerBuild.BuildTool.FLOORS: tool_label = "Floors"
+		TowerBuild.BuildTool.MEZZ2: tool_label = "Mezz 2"
+		TowerBuild.BuildTool.MEZZ3: tool_label = "Mezz 3"
+		TowerBuild.BuildTool.ELEVATOR: tool_label = "Elevator"
+		TowerBuild.BuildTool.STAIRS: tool_label = "Stairs"
+		TowerBuild.BuildTool.ESCALATOR_UP: tool_label = "Esc Up"
+		TowerBuild.BuildTool.ESCALATOR_DOWN: tool_label = "Esc Down"
+		TowerBuild.BuildTool.OFFICE: tool_label = "Office"
+		TowerBuild.BuildTool.APARTMENT: tool_label = "Apartment"
+		TowerBuild.BuildTool.DEMOLISH: tool_label = "Demolish"
+		_: tool_label = "?"
+
+	_hud_tool_chip.text = "Tool: " + tool_label
+
+func _hud_add_btn(row: HBoxContainer, txt: String, cb: Callable) -> void:
+	var b := Button.new()
+	b.text = txt
+	b.focus_mode = Control.FOCUS_NONE
+	row.add_child(b)
+	if not b.is_connected("pressed", cb):
+		b.connect("pressed", cb)
 
 func _world_to_cell(local: Vector2) -> Vector2i:
+	# Round to nearest column/level centered on grid lines.
 	var cx: int = int(floor(local.x / float(CELL_SIZE)))
 	var cy: int = int(floor(local.y / float(CELL_SIZE)))
 	return Vector2i(cx, cy)
@@ -485,5 +782,7 @@ func load_game(slot: int = _save_slot) -> bool:
 
 func _on_autosave_timeout() -> void:
 	save_game(_save_slot)
-	if is_instance_valid(_hud):
-		_hud.set_slot_timestamp(_slot_timestamp(_save_slot))
+
+func _on_toast_timeout() -> void:
+	if _toast_label != null:
+		_toast_label.visible = false
