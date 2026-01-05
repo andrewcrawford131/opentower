@@ -229,6 +229,32 @@ func why_blocked(t: int, cell: Vector2i) -> String:
 
 	return "Nothing here to demolish"
 
+func _floor_anchor_ok(cell: Vector2i) -> bool:
+	# A floor is "anchored" if it has real support below, OR a vertical anchor.
+	var below := Vector2i(cell.x, cell.y - 1)
+	var support_below := floors.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
+	var vertical_below := stairs.has(below) or escalators_up.has(below)
+	var elevator_here := elevators.has(cell) # elevator shaft can anchor the floor at this cell
+	return support_below or vertical_below or elevator_here
+
+
+func _contiguous_floor_segment_has_anchor(start_floor_cell: Vector2i) -> bool:
+	# Scan the contiguous run of floors on this same Y and see if any cell is anchored.
+	var y := start_floor_cell.y
+	var x := start_floor_cell.x
+
+	# Move to left edge of the contiguous run
+	while floors.has(Vector2i(x - 1, y)):
+		x -= 1
+
+	# Walk right across the run
+	while floors.has(Vector2i(x, y)):
+		if _floor_anchor_ok(Vector2i(x, y)):
+			return true
+		x += 1
+
+	return false
+
 func can_build(t: int, cell: Vector2i) -> bool:
 	if not in_bounds(cell):
 		return false
@@ -238,31 +264,44 @@ func can_build(t: int, cell: Vector2i) -> bool:
 			if mezz_reserved.has(cell) or floors.has(cell):
 				return false
 
-			var above := Vector2i(cell.x, cell.y + 1)
-			if stairs.has(above) or escalators_down.has(above) or elevators.has(above):
+			var above_cell := Vector2i(cell.x, cell.y + 1)
+
+			# If there's a vertical piece directly ABOVE, allow "capping" it with a floor.
+			if stairs.has(above_cell) or escalators_down.has(above_cell) or elevators.has(above_cell):
 				return true
 
+			# Ground level rules unchanged
 			if cell.y == 0:
 				return not _any_mezz_on_ground()
 
+			# Underground rules unchanged
 			if cell.y < 0:
-				var support_above := floors.has(above) or mezz2_cells.has(above) or mezz3_cells.has(above)
+				var support_above := floors.has(above_cell) or mezz2_cells.has(above_cell) or mezz3_cells.has(above_cell)
 				if not support_above:
 					return false
+
 				var adj_und := floors.has(Vector2i(cell.x - 1, cell.y)) or floors.has(Vector2i(cell.x + 1, cell.y))
-				var vertical_above := stairs.has(above) or escalators_down.has(above) or elevators.has(above)
+				var vertical_above := stairs.has(above_cell) or escalators_down.has(above_cell) or elevators.has(above_cell)
 				var elev_here_und := elevators.has(cell)
 				return adj_und or vertical_above or elev_here_und
 
-			var below := Vector2i(cell.x, cell.y - 1)
+			# ---- ABOVE GROUND (y > 0) ----
+			# Direct support/anchor at this cell?
+			if _floor_anchor_ok(cell):
+				return true
 
-			var support_below := floors.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
-			var adj2 := floors.has(Vector2i(cell.x - 1, cell.y)) or floors.has(Vector2i(cell.x + 1, cell.y))
-			var vertical_below := stairs.has(below) or escalators_up.has(below)
+			# Otherwise allow spanning ONLY if we're extending from a contiguous floor run
+			# that already contains at least one anchored cell.
+			var left_n := Vector2i(cell.x - 1, cell.y)
+			var right_n := Vector2i(cell.x + 1, cell.y)
 
-			# NEW: allow extending horizontally from an existing floor on the same level
-			# or from a vertical anchor, even if there isn't a floor/mezz directly below.
-			return support_below or adj2 or vertical_below or elevators.has(cell)
+			if floors.has(left_n) and _contiguous_floor_segment_has_anchor(left_n):
+				return true
+			if floors.has(right_n) and _contiguous_floor_segment_has_anchor(right_n):
+				return true
+
+			# No direct support and not connected to an anchored run => no mid-air floors.
+			return false
 
 		BuildTool.ELEVATOR:
 			var h := mezz_span_height(cell)
