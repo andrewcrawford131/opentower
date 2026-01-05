@@ -264,14 +264,24 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Update hover preview first
 		if is_instance_valid(_world):
 			var local: Vector2 = _world.to_local(get_global_mouse_position())
+
+			var prev_cell := _hover_cell
+			var prev_valid := _hover_valid
+
 			_hover_cell = _world_to_cell(local)
 			_hover_valid = _build.can_build(_build.tool, _hover_cell)
+
 			if is_instance_valid(_hud):
 				_hud.update_hover(_hover_cell, _hover_valid)
+
+			# Update drag rectangle endpoint
 			if _drag_building:
 				_drag_b_cell = _mouse_to_cell()
-				if is_instance_valid(_build_layer):
-					_build_layer.queue_redraw()
+
+			# IMPORTANT: redraw whenever hover state changes (or while dragging)
+			if is_instance_valid(_build_layer) and (_drag_building or _hover_cell != prev_cell or _hover_valid != prev_valid):
+				_build_layer.queue_redraw()
+
 		# Pan while dragging
 		if _is_dragging:
 			_camera.position -= Vector2(mm.relative.x, -mm.relative.y)

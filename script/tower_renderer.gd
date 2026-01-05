@@ -59,6 +59,8 @@ func draw_build() -> void:
 	var esc_down: Dictionary = build.escalators_down
 	var mezz2: Dictionary = build.mezz2_cells
 	var mezz3: Dictionary = build.mezz3_cells
+	var offices: Dictionary = build.offices
+	var apartments: Dictionary = build.apartments
 
 	for key in floors.keys():
 		var cell: Vector2i = key
@@ -78,6 +80,12 @@ func draw_build() -> void:
 		_draw_cell(build_layer, key, host.MEZZ2_COLOR)
 	for key in mezz3.keys():
 		_draw_cell(build_layer, key, host.MEZZ3_COLOR)
+	# Draw tenants on top of floors
+	for key in offices.keys():
+		_draw_cell(build_layer, key, host.OFFICE_COLOR)
+
+	for key in apartments.keys():
+		_draw_cell(build_layer, key, host.APARTMENT_COLOR)
 
 	# Hover preview
 	var hc: Vector2i = host._hover_cell
@@ -119,6 +127,38 @@ func draw_build() -> void:
 						Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
 					)
 					build_layer.draw_rect(r2, col2, true)
+
+	# ------------------------------------------------------------
+	# Drag preview (so you can SEE the rectangle while dragging)
+	var is_dragging: bool = bool(host.get("_drag_building"))
+	if is_dragging and build != null:
+		var a: Vector2i = host.get("_drag_a_cell")
+		var b: Vector2i = host.get("_drag_b_cell")
+
+		var x0 := mini(a.x, b.x)
+		var x1 := maxi(a.x, b.x)
+		var y0 := mini(a.y, b.y)
+		var y1 := maxi(a.y, b.y)
+
+		for yy in range(y0, y1 + 1):
+			for xx in range(x0, x1 + 1):
+				var c := Vector2i(xx, yy)
+				if not build.in_bounds(c):
+					continue
+
+				# green/red per-cell
+				var ok = build.can_build(build.tool, c)
+				var col: Color = host.HOVER_OK_COLOR if ok else host.HOVER_BAD_COLOR
+
+				# make it more visible while dragging
+				col.a = maxf(col.a, 0.55)
+
+				var r := Rect2(
+					Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+					Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+				)
+				build_layer.draw_rect(r, col, true)
+
 
 func _draw_cell(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
 	var tl := Vector2(cell.x * host.CELL_SIZE, cell.y * host.CELL_SIZE)

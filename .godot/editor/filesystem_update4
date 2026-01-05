@@ -1,2 +1,4 @@
 res://opentower.gd
 res://script/minimap.gd
+res://script/tower_build.gd
+res://script/tower_renderer.gd

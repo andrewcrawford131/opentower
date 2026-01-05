@@ -190,7 +190,17 @@ func why_blocked(t: int, cell: Vector2i) -> String:
 				return "Occupied by office"
 			return ""
 
-		BuildTool.ELEVATOR, BuildTool.STAIRS, BuildTool.ESCALATOR_UP, BuildTool.ESCALATOR_DOWN:
+		BuildTool.ELEVATOR:
+			# Elevator can be placed even if there is no floor/mezz.
+			if elevators.has(cell) or stairs.has(cell) or escalators_up.has(cell) or escalators_down.has(cell):
+				return "Occupied"
+			# Optional safety: don't allow overwriting tenants
+			if offices.has(cell) or apartments.has(cell):
+				return "Occupied by tenant"
+			return ""
+
+		BuildTool.STAIRS, BuildTool.ESCALATOR_UP, BuildTool.ESCALATOR_DOWN:
+			# These still require a floor/mezz
 			if not floors.has(cell) and not mezz2_cells.has(cell) and not mezz3_cells.has(cell):
 				return "Requires a floor"
 			if elevators.has(cell) or stairs.has(cell) or escalators_up.has(cell) or escalators_down.has(cell):
@@ -245,27 +255,32 @@ func can_build(t: int, cell: Vector2i) -> bool:
 				return adj_und or vertical_above or elev_here_und
 
 			var below := Vector2i(cell.x, cell.y - 1)
-			var support_below := floors.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
-			if not support_below:
-				return false
 
+			var support_below := floors.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
 			var adj2 := floors.has(Vector2i(cell.x - 1, cell.y)) or floors.has(Vector2i(cell.x + 1, cell.y))
 			var vertical_below := stairs.has(below) or escalators_up.has(below)
-			var elevator_here := elevators.has(cell)
 
-			if mezz2_cells.has(below) or mezz3_cells.has(below):
-				return adj2 or vertical_below or elevator_here
-
-			return adj2 or vertical_below or elevator_here
+			# NEW: allow extending horizontally from an existing floor on the same level
+			# or from a vertical anchor, even if there isn't a floor/mezz directly below.
+			return support_below or adj2 or vertical_below or elevators.has(cell)
 
 		BuildTool.ELEVATOR:
 			var h := mezz_span_height(cell)
 			for i in range(h):
 				var c := Vector2i(cell.x, cell.y + i)
-				if not (floors.has(c) or mezz2_cells.has(c) or mezz3_cells.has(c)):
+
+				# Make sure every spanned cell stays in bounds
+				if not in_bounds(c):
 					return false
+
+				# Can't overlap other verticals / itself
 				if elevators.has(c) or stairs.has(c) or escalators_up.has(c) or escalators_down.has(c):
 					return false
+
+				# Optional safety: don't allow overwriting tenants
+				if offices.has(c) or apartments.has(c):
+					return false
+
 			return true
 
 		BuildTool.STAIRS:
