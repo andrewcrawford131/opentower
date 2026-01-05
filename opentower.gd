@@ -246,9 +246,39 @@ func _drag_rect_from(a: Vector2i, b: Vector2i) -> Rect2i:
 	return Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 
 func _drag_place_rect(rect: Rect2i) -> void:
+	# Mezz drag: only place along X on ground row (y=0)
+	if _build.tool == TowerBuild.BuildTool.MEZZ2 or _build.tool == TowerBuild.BuildTool.MEZZ3:
+		var y := 0
+		for xx in range(rect.position.x, rect.position.x + rect.size.x):
+			_build.attempt_build(Vector2i(xx, y))
+		return
+
+	# Floors drag: iterative fill (matches ghost preview behaviour)
+	if _build.tool == TowerBuild.BuildTool.FLOORS:
+		var cells: Array[Vector2i] = []
+		for yy in range(rect.position.y, rect.position.y + rect.size.y):
+			for xx in range(rect.position.x, rect.position.x + rect.size.x):
+				cells.append(Vector2i(xx, yy))
+
+		var changed := true
+		var safety := 0
+		while changed and safety < 256:
+			changed = false
+			safety += 1
+			for c in cells:
+				if not _build.in_bounds(c):
+					continue
+				if _build.floors.has(c):
+					continue
+				if _build.can_build(_build.tool, c):
+					_build.attempt_build(c)
+					changed = true
+		return
+
+	# Default: place every cell in rect
 	for yy in range(rect.position.y, rect.position.y + rect.size.y):
 		for xx in range(rect.position.x, rect.position.x + rect.size.x):
-			_drag_place_single(Vector2i(xx, yy))
+			_build.attempt_build(Vector2i(xx, yy))
 
 func _drag_place_single(cell: Vector2i) -> void:
 	_build.attempt_build(cell)
@@ -277,6 +307,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			# Update drag rectangle endpoint
 			if _drag_building:
 				_drag_b_cell = _mouse_to_cell()
+
+				# Mezz drag is always on ground row
+				if _build.tool == TowerBuild.BuildTool.MEZZ2 or _build.tool == TowerBuild.BuildTool.MEZZ3:
+					_drag_b_cell.y = 0
 
 			# IMPORTANT: redraw whenever hover state changes (or while dragging)
 			if is_instance_valid(_build_layer) and (_drag_building or _hover_cell != prev_cell or _hover_valid != prev_valid):
@@ -307,9 +341,24 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Build drag (LMB)
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
-				_drag_building = true
-				_drag_a_cell = _mouse_to_cell()
-				_drag_b_cell = _drag_a_cell
+				var start_cell := _mouse_to_cell()
+				var tool := _build.tool
+
+				var allow_drag := false
+
+				if tool == TowerBuild.BuildTool.FLOORS:
+					allow_drag = (start_cell.y == 0) or _build.level_has_anchored_floor(start_cell.y)
+				elif tool == TowerBuild.BuildTool.MEZZ2 or tool == TowerBuild.BuildTool.MEZZ3:
+					start_cell.y = 0
+					allow_drag = true
+
+				if allow_drag:
+					_drag_building = true
+					_drag_a_cell = start_cell
+					_drag_b_cell = start_cell
+				else:
+					_build.attempt_build(start_cell)
+
 				if is_instance_valid(_build_layer):
 					_build_layer.queue_redraw()
 			else:

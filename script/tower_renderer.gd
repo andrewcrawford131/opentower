@@ -129,7 +129,7 @@ func draw_build() -> void:
 					build_layer.draw_rect(r2, col2, true)
 
 	# ------------------------------------------------------------
-	# Drag preview (so you can SEE the rectangle while dragging)
+	# Drag preview (GHOST sim so colors match what will actually build)
 	var is_dragging: bool = bool(host.get("_drag_building"))
 	if is_dragging and build != null:
 		var a: Vector2i = host.get("_drag_a_cell")
@@ -140,25 +140,43 @@ func draw_build() -> void:
 		var y0 := mini(a.y, b.y)
 		var y1 := maxi(a.y, b.y)
 
+		var tool: int = build.tool
+		var cells: Array[Vector2i] = []
+
+		# Mezz drag is only on y=0 (keep preview consistent)
+		if tool == TowerBuild.BuildTool.MEZZ2 or tool == TowerBuild.BuildTool.MEZZ3:
+			y0 = 0
+			y1 = 0
+
 		for yy in range(y0, y1 + 1):
 			for xx in range(x0, x1 + 1):
 				var c := Vector2i(xx, yy)
-				if not build.in_bounds(c):
-					continue
+				if build.in_bounds(c):
+					cells.append(c)
 
-				# green/red per-cell
-				var ok = build.can_build(build.tool, c)
-				var col: Color = host.HOVER_OK_COLOR if ok else host.HOVER_BAD_COLOR
+		var ghost: Dictionary = {}
+		if tool == TowerBuild.BuildTool.FLOORS:
+			ghost = build.ghost_preview_floors(cells)
 
-				# make it more visible while dragging
-				col.a = maxf(col.a, 0.55)
+		for c in cells:
+			# Don't paint existing floors as "bad"
+			if tool == TowerBuild.BuildTool.FLOORS and build.floors.has(c):
+				continue
 
-				var r := Rect2(
-					Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
-					Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
-				)
-				build_layer.draw_rect(r, col, true)
+			var ok: bool
+			if tool == TowerBuild.BuildTool.FLOORS:
+				ok = bool(ghost.get(c, false))
+			else:
+				ok = build.can_build(tool, c)
 
+			var col: Color = host.HOVER_OK_COLOR if ok else host.HOVER_BAD_COLOR
+			col.a = maxf(col.a, 0.55)
+
+			var r := Rect2(
+				Vector2(float(c.x * host.CELL_SIZE), float(c.y * host.CELL_SIZE)),
+				Vector2(float(host.CELL_SIZE), float(host.CELL_SIZE))
+			)
+			build_layer.draw_rect(r, col, true)
 
 func _draw_cell(layer: CanvasItem, cell: Vector2i, color: Color) -> void:
 	var tl := Vector2(cell.x * host.CELL_SIZE, cell.y * host.CELL_SIZE)

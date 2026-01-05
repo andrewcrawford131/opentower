@@ -229,31 +229,162 @@ func why_blocked(t: int, cell: Vector2i) -> String:
 
 	return "Nothing here to demolish"
 
-func _floor_anchor_ok(cell: Vector2i) -> bool:
-	# A floor is "anchored" if it has real support below, OR a vertical anchor.
-	var below := Vector2i(cell.x, cell.y - 1)
-	var support_below := floors.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
-	var vertical_below := stairs.has(below) or escalators_up.has(below)
-	var elevator_here := elevators.has(cell) # elevator shaft can anchor the floor at this cell
-	return support_below or vertical_below or elevator_here
+func _column_has_base(x: int) -> bool:
+	# Elevator-only worlds still need a base to “anchor” floors.
+	return floors.has(Vector2i(x, 0)) or mezz2_cells.has(Vector2i(x, 0)) or mezz3_cells.has(Vector2i(x, 0))
 
+func _floor_anchor_ok(cell: Vector2i) -> bool:
+	# Ground is handled elsewhere
+	if cell.y == 0:
+		return true
+
+	# Elevator anchors ONLY if the column has a base at y=0
+	if elevators.has(cell) and _column_has_base(cell.x):
+		return true
+
+	if cell.y > 0:
+		# Above ground: must be directly above stairs / esc-up
+		var below := Vector2i(cell.x, cell.y - 1)
+		return stairs.has(below) or escalators_up.has(below)
+
+	# Underground: must be directly below stairs / esc-down
+	var above := Vector2i(cell.x, cell.y + 1)
+	return stairs.has(above) or escalators_down.has(above)
 
 func _contiguous_floor_segment_has_anchor(start_floor_cell: Vector2i) -> bool:
-	# Scan the contiguous run of floors on this same Y and see if any cell is anchored.
 	var y := start_floor_cell.y
 	var x := start_floor_cell.x
 
-	# Move to left edge of the contiguous run
 	while floors.has(Vector2i(x - 1, y)):
 		x -= 1
 
-	# Walk right across the run
 	while floors.has(Vector2i(x, y)):
 		if _floor_anchor_ok(Vector2i(x, y)):
 			return true
 		x += 1
 
 	return false
+
+func level_has_anchored_floor(level_y: int) -> bool:
+	for k in floors.keys():
+		var c := k as Vector2i
+		if c.y == level_y and _floor_anchor_ok(c):
+			return true
+	return false
+
+func _floor_support_ok(cell: Vector2i, floor_dict: Dictionary) -> bool:
+	# Ground is special (handled by mezz rule)
+	if cell.y == 0:
+		return true
+
+	if cell.y > 0:
+		var below := Vector2i(cell.x, cell.y - 1)
+		return floor_dict.has(below) or mezz2_cells.has(below) or mezz3_cells.has(below)
+
+	# cell.y < 0
+	var above := Vector2i(cell.x, cell.y + 1)
+	return floor_dict.has(above) or mezz2_cells.has(above) or mezz3_cells.has(above)
+
+# --- GHOST / SIMULATION (for drag preview) ----------------------------
+
+func _ghost_column_has_base(x: int, ghost_floors: Dictionary) -> bool:
+	# Base = floor at y=0 OR mezz at y=0
+	return ghost_floors.has(Vector2i(x, 0)) or mezz2_cells.has(Vector2i(x, 0)) or mezz3_cells.has(Vector2i(x, 0))
+
+func _ghost_floor_anchor_ok(cell: Vector2i, ghost_floors: Dictionary) -> bool:
+	# Ground is handled in _ghost_can_build_floor (mezz rules), so:
+	if cell.y == 0:
+		return true
+
+	# Elevator can anchor a floor tile at this cell if the column has a base
+	if elevators.has(cell) and _ghost_column_has_base(cell.x, ghost_floors):
+		return true
+
+	# Above ground: needs stairs/esc-up below
+	if cell.y > 0:
+		var below := Vector2i(cell.x, cell.y - 1)
+		return stairs.has(below) or escalators_up.has(below)
+
+	# Underground: needs stairs/esc-down above
+	var above := Vector2i(cell.x, cell.y + 1)
+	return stairs.has(above) or escalators_down.has(above)
+
+func _ghost_contiguous_floor_segment_has_anchor(start_floor_cell: Vector2i, ghost_floors: Dictionary) -> bool:
+	var y := start_floor_cell.y
+	var x := start_floor_cell.x
+
+	# Move to left edge of contiguous run
+	while ghost_floors.has(Vector2i(x - 1, y)):
+		x -= 1
+
+	# Walk right and see if ANY tile in this run is anchored
+	while ghost_floors.has(Vector2i(x, y)):
+		if _ghost_floor_anchor_ok(Vector2i(x, y), ghost_floors):
+			return true
+		x += 1
+
+	return false
+
+func _ghost_can_build_floor(cell: Vector2i, ghost_floors: Dictionary) -> bool:
+	if mezz_reserved.has(cell) or ghost_floors.has(cell):
+		return false
+
+	# Ground floors blocked if ANY mezz exists on ground (your rule)
+	if cell.y == 0:
+		return not _any_mezz_on_ground()
+
+	# NEW: hard physics support (prevents mid-air)
+	if not _floor_support_ok(cell, ghost_floors):
+		return false
+
+	# First tile on a level must be an anchor
+	if _ghost_floor_anchor_ok(cell, ghost_floors):
+		return true
+
+	# Otherwise you can extend from a run that already contains an anchor
+	var left_n := Vector2i(cell.x - 1, cell.y)
+	var right_n := Vector2i(cell.x + 1, cell.y)
+
+	if ghost_floors.has(left_n) and _ghost_contiguous_floor_segment_has_anchor(left_n, ghost_floors):
+		return true
+	if ghost_floors.has(right_n) and _ghost_contiguous_floor_segment_has_anchor(right_n, ghost_floors):
+		return true
+
+	return false
+
+func ghost_preview_floors(cells: Array[Vector2i]) -> Dictionary:
+	# returns Dictionary(Vector2i -> bool) true = would place during drag fill
+	var ghost_floors: Dictionary = floors.duplicate()
+	var will: Dictionary = {}
+
+	var changed2 := true
+	var safety := 0
+
+	while changed2 and safety < 256:
+		changed2 = false
+		safety += 1
+
+		for c in cells:
+			if not in_bounds(c):
+				continue
+			if mezz_reserved.has(c):
+				continue
+			if ghost_floors.has(c):
+				continue
+			if will.has(c):
+				continue
+
+			if _ghost_can_build_floor(c, ghost_floors):
+				ghost_floors[c] = true
+				will[c] = true
+				changed2 = true
+
+	# Fill missing entries as false (useful for preview lookups)
+	for c in cells:
+		if not will.has(c):
+			will[c] = false
+
+	return will
 
 func can_build(t: int, cell: Vector2i) -> bool:
 	if not in_bounds(cell):
@@ -264,34 +395,19 @@ func can_build(t: int, cell: Vector2i) -> bool:
 			if mezz_reserved.has(cell) or floors.has(cell):
 				return false
 
-			var above_cell := Vector2i(cell.x, cell.y + 1)
-
-			# If there's a vertical piece directly ABOVE, allow "capping" it with a floor.
-			if stairs.has(above_cell) or escalators_down.has(above_cell) or elevators.has(above_cell):
-				return true
-
-			# Ground level rules unchanged
+			# Ground rules unchanged
 			if cell.y == 0:
 				return not _any_mezz_on_ground()
 
-			# Underground rules unchanged
-			if cell.y < 0:
-				var support_above := floors.has(above_cell) or mezz2_cells.has(above_cell) or mezz3_cells.has(above_cell)
-				if not support_above:
-					return false
+			# NEW: hard physics support (prevents mid-air)
+			if not _floor_support_ok(cell, floors):
+				return false
 
-				var adj_und := floors.has(Vector2i(cell.x - 1, cell.y)) or floors.has(Vector2i(cell.x + 1, cell.y))
-				var vertical_above := stairs.has(above_cell) or escalators_down.has(above_cell) or elevators.has(above_cell)
-				var elev_here_und := elevators.has(cell)
-				return adj_und or vertical_above or elev_here_und
-
-			# ---- ABOVE GROUND (y > 0) ----
-			# Direct support/anchor at this cell?
+			# Non-zero levels: vertical-first anchors
 			if _floor_anchor_ok(cell):
 				return true
 
-			# Otherwise allow spanning ONLY if we're extending from a contiguous floor run
-			# that already contains at least one anchored cell.
+			# Otherwise, allow extending left/right ONLY if connected to an anchored run
 			var left_n := Vector2i(cell.x - 1, cell.y)
 			var right_n := Vector2i(cell.x + 1, cell.y)
 
@@ -300,7 +416,6 @@ func can_build(t: int, cell: Vector2i) -> bool:
 			if floors.has(right_n) and _contiguous_floor_segment_has_anchor(right_n):
 				return true
 
-			# No direct support and not connected to an anchored run => no mid-air floors.
 			return false
 
 		BuildTool.ELEVATOR:
@@ -451,35 +566,35 @@ func attempt_build(cell: Vector2i) -> void:
 
 			if offices.has(cell):
 				offices.erase(cell)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 			if apartments.has(cell):
 				apartments.erase(cell)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if stairs.has(cell):
 				for c in _collect_contiguous(stairs, cell):
 					stairs.erase(c)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if escalators_up.has(cell):
 				for c in _collect_contiguous(escalators_up, cell):
 					escalators_up.erase(c)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if escalators_down.has(cell):
 				escalators_down.erase(cell)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if floors.has(cell):
 				if floors.has(above):
 					return
 				floors.erase(cell)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if elevators.has(cell):
@@ -489,7 +604,7 @@ func attempt_build(cell: Vector2i) -> void:
 						return
 				for c in group:
 					elevators.erase(c)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
 			if mezz2_cells.has(cell) or mezz3_cells.has(cell):
@@ -501,10 +616,10 @@ func attempt_build(cell: Vector2i) -> void:
 					if mezz2_cells.has(c): mezz2_cells.erase(c)
 					if mezz3_cells.has(c): mezz3_cells.erase(c)
 					mezz_reserved.erase(c)
-				emit_signal("changed")
+				emit_signal("changed2")
 				return
 
-	emit_signal("changed")
+	emit_signal("changed2")
 
 # --- Save/Load support (same schema as before) ---
 func _dict_to_xy_array(dict_in: Dictionary) -> Array:
@@ -583,5 +698,5 @@ func deserialize_state(data: Dictionary) -> bool:
 	if data.has("meta") and data.meta is Dictionary and data.meta.has("tool"):
 		tool = int(data.meta.tool)
 
-	emit_signal("changed")
+	emit_signal("changed2")
 	return true
