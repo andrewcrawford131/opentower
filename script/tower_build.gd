@@ -169,6 +169,8 @@ func why_blocked(t: int, cell: Vector2i) -> String:
 			return ""
 
 		BuildTool.OFFICE:
+			if cell.y < 0:
+				return "Office cannot be built underground"
 			if not floors.has(cell):
 				return "Office requires a floor"
 			if elevators.has(cell) or stairs.has(cell) or escalators_up.has(cell) or escalators_down.has(cell):
@@ -180,6 +182,8 @@ func why_blocked(t: int, cell: Vector2i) -> String:
 			return ""
 
 		BuildTool.APARTMENT:
+			if cell.y < 0:
+				return "Apartment cannot be built underground"
 			if not floors.has(cell):
 				return "Apartment requires a floor"
 			if elevators.has(cell) or stairs.has(cell) or escalators_up.has(cell) or escalators_down.has(cell):
@@ -488,6 +492,8 @@ func can_build(t: int, cell: Vector2i) -> bool:
 			return true
 
 		BuildTool.OFFICE, BuildTool.APARTMENT:
+			if cell.y < 0:
+				return false
 			if not floors.has(cell):
 				return false
 			if elevators.has(cell) or stairs.has(cell) or escalators_up.has(cell) or escalators_down.has(cell) or mezz2_cells.has(cell) or mezz3_cells.has(cell):
@@ -566,35 +572,35 @@ func attempt_build(cell: Vector2i) -> void:
 
 			if offices.has(cell):
 				offices.erase(cell)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 			if apartments.has(cell):
 				apartments.erase(cell)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if stairs.has(cell):
 				for c in _collect_contiguous(stairs, cell):
 					stairs.erase(c)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if escalators_up.has(cell):
 				for c in _collect_contiguous(escalators_up, cell):
 					escalators_up.erase(c)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if escalators_down.has(cell):
 				escalators_down.erase(cell)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if floors.has(cell):
 				if floors.has(above):
 					return
 				floors.erase(cell)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if elevators.has(cell):
@@ -604,7 +610,7 @@ func attempt_build(cell: Vector2i) -> void:
 						return
 				for c in group:
 					elevators.erase(c)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
 			if mezz2_cells.has(cell) or mezz3_cells.has(cell):
@@ -616,10 +622,10 @@ func attempt_build(cell: Vector2i) -> void:
 					if mezz2_cells.has(c): mezz2_cells.erase(c)
 					if mezz3_cells.has(c): mezz3_cells.erase(c)
 					mezz_reserved.erase(c)
-				emit_signal("changed2")
+				emit_signal("changed")
 				return
 
-	emit_signal("changed2")
+	emit_signal("changed")
 
 # --- Save/Load support (same schema as before) ---
 func _dict_to_xy_array(dict_in: Dictionary) -> Array:
@@ -698,5 +704,5 @@ func deserialize_state(data: Dictionary) -> bool:
 	if data.has("meta") and data.meta is Dictionary and data.meta.has("tool"):
 		tool = int(data.meta.tool)
 
-	emit_signal("changed2")
+	emit_signal("changed")
 	return true

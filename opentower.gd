@@ -16,6 +16,9 @@ const TowerBuildScript := preload("res://script/tower_build.gd")
 var _build: TowerBuild
 const TowerHudScript := preload("res://script/tower_hud.gd")
 var _hud: TowerHud
+const PeopleManagerScript := preload("res://script/people_manager.gd")
+var _people: PeopleManager
+var _people_layer: Node2D
 
 # ---- Colors ----
 @export var SKY_COLOR: Color = Color(0.55, 0.75, 1.0, 1.0)
@@ -102,9 +105,11 @@ func _world_bottom_px() -> float:
 func _on_build_changed() -> void:
 	if is_instance_valid(_build_layer):
 		_build_layer.queue_redraw()
+	if is_instance_valid(_people_layer):
+		_people_layer.queue_redraw()
 	if is_instance_valid(_minimap):
 		_minimap.update_viewbox()
-
+		
 func _ready() -> void:
 	# Window setup
 	var screen_id: int = DisplayServer.window_get_current_screen()
@@ -136,20 +141,49 @@ func _ready() -> void:
 	_build_layer.name = "BuildLayer"
 	_build_layer.z_index = 5
 	_world.add_child(_build_layer)
+	
+	_build = TowerBuildScript.new()
+	if _build == null:
+		push_error("FAILED to instantiate TowerBuildScript (res://script/tower_build.gd). Fix script errors and reload.")
+		return
+
+	add_child(_build)
+	_build.setup(self)
+	_build.changed.connect(Callable(self, "_on_build_changed"))
 
 	_grid_layer = Node2D.new()
 	_grid_layer.name = "GridLayer"
 	_grid_layer.z_index = 10
 	_world.add_child(_grid_layer)
 
-	_build = TowerBuildScript.new()
-	add_child(_build)
-	_build.setup(self)
-	_build.changed.connect(Callable(self, "_on_build_changed"))
+	_people_layer = Node2D.new()  # IMPORTANT: no "var" here (fixes SHADOWED_VARIABLE)
+	_people_layer.name = "PeopleLayer"
+	_people_layer.z_index = 8
+	_world.add_child(_people_layer)
+
+	_people = PeopleManagerScript.new()
+	add_child(_people)
+
+	# IMPORTANT: pass self + the real _build (not null)
+	_people.setup(self, _build, _people_layer)
+
+	# draw hook
+	_people_layer.connect("draw", Callable(_people, "draw_people"))
+
+	# update HUD counter
+	if _hud != null:
+		_people.count_changed.connect(Callable(_hud, "set_people_count"))
+
+	# optional: reconcile immediately when build changes
+	_build.changed.connect(Callable(_people, "on_build_changed"))
 
 	_hud = TowerHudScript.new()
 	add_child(_hud)
 	_hud.setup(self, _build, {"save_slots": SAVE_SLOTS, "start_slot": _save_slot})
+
+	if is_instance_valid(_hud) and is_instance_valid(_people):
+		_people.count_changed.connect(Callable(_hud, "set_people_count"))
+		_hud.set_people_count(_people.get_people_count())
 
 	_hud.tool_changed.connect(Callable(self, "_on_hud_tool_changed"))
 	_hud.slot_changed.connect(Callable(self, "_on_hud_slot_changed"))

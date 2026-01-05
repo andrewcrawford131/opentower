@@ -1,4 +1,2 @@
+res://script/people_manager.gd
 res://opentower.gd
-res://script/minimap.gd
-res://script/tower_build.gd
-res://script/tower_renderer.gd

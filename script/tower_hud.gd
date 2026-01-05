@@ -35,6 +35,8 @@ var toast_layer: CanvasLayer = null
 var toast_label: Label = null
 var toast_timer: Timer = null
 
+var _people_label: Label
+
 func setup(_host: Node, _build: TowerBuild, p_cfg: Dictionary = {}) -> void:
 	host = _host
 	build = _build
@@ -88,6 +90,10 @@ func toast(msg: String) -> void:
 	toast_label.text = msg
 	toast_label.visible = true
 	toast_timer.start()
+
+func set_people_count(n: int) -> void:
+	if _people_label != null:
+		_people_label.text = "People: " + str(n)
 
 # -------------------------------------------------------------------
 
@@ -180,6 +186,13 @@ func _build_toolbar_and_hint() -> void:
 	hint_label.add_theme_color_override("font_color", Color(0, 0, 0))
 	hint_label.add_theme_font_size_override("font_size", 20)
 	hint_panel.add_child(hint_label)
+	
+	_people_label = Label.new()
+	_people_label.text = "People: 0"
+	_people_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_people_label.add_theme_font_size_override("font_size", 18)
+	_people_label.add_theme_color_override("font_color", Color(1, 1, 1, 1))
+	hud_layer.add_child(_people_label) # <<< IMPORTANT: keep it in the HUD canvas layer
 
 func _build_save_hud() -> void:
 	save_layer = CanvasLayer.new()
@@ -258,14 +271,25 @@ func _relayout_chip_and_hint() -> void:
 func _relayout_chip_and_hint_deferred() -> void:
 	if toolbar_panel == null:
 		return
+
 	var panel_pos: Vector2 = toolbar_panel.position
 	var panel_size: Vector2 = toolbar_panel.size
 
+	# Tool chip to the right of toolbar
 	if tool_chip != null:
 		tool_chip.position = Vector2(panel_pos.x + panel_size.x + 12.0, panel_pos.y + 2.0)
 
+	# People counter directly under toolbar
+	if _people_label != null:
+		_people_label.position = Vector2(panel_pos.x, panel_pos.y + panel_size.y + 6.0)
+
+	# Tips/hint bar goes BELOW the people counter
 	if hint_panel != null:
-		hint_panel.position = Vector2(panel_pos.x, panel_pos.y + panel_size.y + 8.0)
+		var y_under: float = panel_pos.y + panel_size.y + 8.0
+		if _people_label != null:
+			var ph: float = maxf(_people_label.size.y, _people_label.get_minimum_size().y)
+			y_under = _people_label.position.y + ph + 8.0
+		hint_panel.position = Vector2(panel_pos.x, y_under)
 
 func _position_save_row() -> void:
 	if save_row == null:
