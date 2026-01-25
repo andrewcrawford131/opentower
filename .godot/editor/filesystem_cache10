@@ -1,10 +1,21 @@
 63f7b34db8d8cdea90c76aacccf841ec
-::res://::1767795477
+::res://::1768170796
+Earth.png::CompressedTexture2D::891362665156905504::1767796530::1768170924::1::::<><><>0<>0<>7a013822f370d6efc20eef0b5edd3c5b<>res://.godot/imported/Earth.png-f0706c55d6c152f0bf63f65102e80f3f.ctex::
+export_presets.cfg::TextFile::-1::1768170796::0::1::::<><><>0<>0<><>::
+Hotel Deluxe Suite.png::CompressedTexture2D::34801489427481414::1767795953::1768170924::1::::<><><>0<>0<>36690ec15d58e05a3a72cea0aab82ffa<>res://.godot/imported/Hotel Deluxe Suite.png-8bf5403cc575b238d948f85e3f73ac40.ctex::
 hotelroombasic.png::CompressedTexture2D::3305576093359318761::1764369991::1767567966::1::::<><><>0<>0<>a6bd4a84d67a7a2c49c5d4fe28e72c5e<>res://.godot/imported/hotelroombasic.png-8fd7f50db143bdaf1b0d6d163a132367.ctex::
+Lift.png::CompressedTexture2D::3097022538199720790::1767798194::1768170924::1::::<><><>0<>0<>4b2a9e1e96afe1d79a243c1defe91d93<>res://.godot/imported/Lift.png-8662fd3339c0026ea5741f0cc84c7ce2.ctex::
 Main.tscn::PackedScene::3348790947890245243::1767566631::0::1::::<><><>0<>0<><>::uid://bg8ikkn868wry::::res://opentower.gd
+Mezz 4.png::CompressedTexture2D::5160666935538358716::1767798389::1768170924::1::::<><><>0<>0<>808e27a2779ef25f3227aa08b3c1379a<>res://.godot/imported/Mezz 4.png-c551970f05c39c14e3c8a6fc41c5fe9c.ctex::
+Office Executive.png::CompressedTexture2D::8801073470040212786::1767798046::1768170924::1::::<><><>0<>0<>c6370b3c5fdeaef0195e08a200e6aa0d<>res://.godot/imported/Office Executive.png-0015581693f03e5212930ed8b4e497c1.ctex::
+Office Standard.png::CompressedTexture2D::5532699379251338427::1767796243::1768170924::1::::<><><>0<>0<>fc0d4015732962b8d66d968eee6cc09a<>res://.godot/imported/Office Standard.png-e88aa0c45e6797f45e255eb793522ffd.ctex::
 opentower.gd::GDScript::2876182352144525962::1767635735::0::1::::OpenTower<>Node2D<><>0<>0<><>::
+Person.png::CompressedTexture2D::7855371146000323761::1767798642::1768170925::1::::<><><>0<>0<>7893c1983dbe2c97d758b02c7d0d6220<>res://.godot/imported/Person.png-174efec90c7e11607dde85b10d00f533.ctex::
 README.md::TextFile::-1::1764369991::0::1::::<><><>0<>0<><>::
-::res://script/::1767633915
+Sky.png::CompressedTexture2D::4739179275886293382::1767797342::1768170924::1::::<><><>0<>0<>470c47a0ae11f9936b0ae5f308285094<>res://.godot/imported/Sky.png-8c43aacd3d620d81964b518cb41623f6.ctex::
+Standard Apartment.png::CompressedTexture2D::7247111808089019254::1767797893::1768170924::1::::<><><>0<>0<>1f040917bdbe9f2694e25f33cdcaa39f<>res://.godot/imported/Standard Apartment.png-5a3fdf70ea567aba0e3a389de81c0cc6.ctex::
+Street.png::CompressedTexture2D::6606795989229199450::1767796455::1768170924::1::::<><><>0<>0<>d0670f12d40d92fedc528a086356521e<>res://.godot/imported/Street.png-aa7f043f2ebac4e5784980068af00f01.ctex::
+::res://script/::1767634222
 minimap.gd::GDScript::587254845350931922::1767611627::0::1::::MinimapController<>Node<><>0<>0<><>::
 people_manager.gd::GDScript::6102893781547809957::1767636404::0::1::::PeopleManager<>Node<><>0<>0<><>::
 person_state.gd::GDScript::1330739267339898458::1767633615::0::1::::PersonState<>RefCounted<><>0<>0<><>::
